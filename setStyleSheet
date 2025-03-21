@@ -1,0 +1,5 @@
+./FaceHomeFrms/FaceHomeTitleFrm.cpp:73:    m_pNetPngLabel->setObjectName("NetPngLabel");
+./FaceHomeFrms/FaceHomeTitleFrm.cpp:128:        d->m_pNetPngLabel->setStyleSheet("QLabel#NetPngLabel{border:0px;outline: none;color:white;min-width:42px;min-height:32px;image: url(:/Images/ethernet_connect.png);}");
+./FaceHomeFrms/FaceHomeTitleFrm.cpp:130:        d->m_pNetPngLabel->setStyleSheet("QLabel#NetPngLabel{border:0px;outline: none;color:white;min-width:42px;min-height:32px;image: url(:/Images/wifi_connect.png);}");
+./FaceHomeFrms/FaceHomeTitleFrm.cpp:131:    else if(!state)d->m_pNetPngLabel->setStyleSheet("QLabel#NetPngLabel{border:0px;outline: none;color:white;min-width:42px;min-height:32px;image: url(:/Images/ethernet_disconnect.png);}");
+./FaceHomeFrms/FaceHomeTitleFrm.cpp:132:    else d->m_pNetPngLabel->setStyleSheet("QLabel#NetPngLabel{border:0px;outline: none;color:white;min-width:42px;min-height:32px;image: url(:/Images/ethernet_connect.png);}");

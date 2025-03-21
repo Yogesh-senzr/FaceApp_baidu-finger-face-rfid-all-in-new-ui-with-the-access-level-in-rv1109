@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Fonts/gulim.ttc</file>
+    </qresource>
+</RCC>
