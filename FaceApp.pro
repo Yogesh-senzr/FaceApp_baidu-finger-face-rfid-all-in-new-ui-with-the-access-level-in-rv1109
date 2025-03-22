@@ -84,6 +84,7 @@ SOURCES += \
     FaceHomeFrms/FaceHomeFrm.cpp \
     SettingFuncFrms/HomeMenuFrm.cpp \
     SettingFuncFrms/SettingMenuFrm.cpp \
+    SettingFuncFrms/PasswordDialog.cpp \
     SettingFuncFrms/SettingMenuTitleFrm.cpp \
     SettingFuncFrms/SettingEditTextFrm.cpp \    
     SettingFuncFrms/IdentifySetupFrms/IdentifySetupFrm.cpp \
@@ -183,6 +184,7 @@ HEADERS += \
     Helper/myhelper.h \
     FaceHomeFrms/FaceHomeFrm.h \
     SettingFuncFrms/HomeMenuFrm.h \
+    SettingFuncFrms/PasswordDialog.h \
     SettingFuncFrms/SettingMenuFrm.h \
     SettingFuncFrms/SettingMenuTitleFrm.h \
     SettingFuncFrms/SettingEditTextFrm.h \    

@@ -6,6 +6,7 @@
 #include <QGridLayout>
 #include <QStyleOption>
 #include <QPainter>
+#include "PasswordDialog.h" // Include the password dialog
 #include <QMessageBox>
 
 class HomeMenuFrmPrivate
@@ -152,40 +153,15 @@ void HomeMenuFrm::slotNetworkSetupClicked()
 
 void HomeMenuFrm::slotSrvSetupClicked()
 {
-    QMessageBox warningMsg;
-    warningMsg.setIcon(QMessageBox::Warning);
-    warningMsg.setText(tr("Warning"));
-    warningMsg.setInformativeText(tr("Entering HostSetup may affect Server configuration. Proceed with caution."));
-    warningMsg.setStandardButtons(QMessageBox::Cancel | QMessageBox::Ok);
-    warningMsg.setDefaultButton(QMessageBox::Cancel);
+    PasswordDialog pwdDialog(this);
+    pwdDialog.setModal(true);  // Ensure it's modal
+    pwdDialog.setFocus();
 
-    // Set font size
-    QFont font = warningMsg.font();
-    font.setPointSize(8);
-    warningMsg.setFont(font);
-
-    // Set style sheet for checkbox and buttons
-    warningMsg.setStyleSheet(
-        "QMessageBox {"
-        "    background-color: #FEFEFA;"
-        "    color: #000000;"
-        "}"
-        "QMessageBox QPushButton {"
-        "    background-color: #0087BD;" // Dark gray button background
-        "    color: #FEFEFA;"
-        "    min-width: 54px;"
-        "    padding: 5px;"
-        "    border-radius: 0px;"
-        "}"
-        "QMessageBox QPushButton:hover {"
-        "    background-color: #33A3D6;" // Slightly lighter when hovering
-        "}"
-    );
-
-    if (warningMsg.exec() == QMessageBox::Ok) {
-        emit sigShowFrm(tr("HostSetup"));
+    if (pwdDialog.exec() == QDialog::Accepted) {  // If OK was pressed
+        emit sigShowFrm(QObject::tr("HostSetup")); // Proceed to Host Setup
     }
 }
+
 void HomeMenuFrm::slotSysSetupClicked()
 {
     emit sigShowFrm(QObject::tr("SystemSetup"));//系统配置
