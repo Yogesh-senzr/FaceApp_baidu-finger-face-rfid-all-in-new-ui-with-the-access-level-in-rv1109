@@ -1,37 +1,43 @@
-#ifndef HomeMenuFrm_H
-#define HomeMenuFrm_H
+// Updated HomeMenuFrm.h - Card-based theme support
+
+#ifndef HOMEMENUFRM_H
+#define HOMEMENUFRM_H
 
 #include "SettingFuncFrms/SettingBaseFrm.h"
 
-//首页配置功能菜单UI
 class HomeMenuFrmPrivate;
+
 class HomeMenuFrm : public SettingBaseFrm
 {
     Q_OBJECT
 public:
     explicit HomeMenuFrm(QWidget *parent = nullptr);
     ~HomeMenuFrm();
-public:
-    void setHomeDisplay_SnNum(const int &);
-    void setHomeDisplay_Mac(const int &);
-    void setHomeDisplay_IP(const int &);
-    void setHomeDisplay_PersonNum(const int &);
+    
+    // Method to handle card clicks
+    void handleCardClicked(int cardIndex, const QString &title);
+
+private slots:
+    void slotManagingPeopleClicked();
+    void slotRecordsManagementClicked();
+    void slotNetworkSetupClicked();
+    void slotSrvSetupClicked();
+    void slotSysSetupClicked();
+    void slotIdentifySetupClicked();
+
+signals:
+    void sigShowFrm(const QString &frmName);
+
 private:
-    Q_SLOT void slotManagingPeopleClicked();//人员管理
-    Q_SLOT void slotRecordsManagementClicked();//记录管理
-    Q_SLOT void slotNetworkSetupClicked();//网络设置
-    Q_SLOT void slotSrvSetupClicked();//服务器设置
-    Q_SLOT void slotSysSetupClicked();//系统配置
-    Q_SLOT void slotIdentifySetupClicked();//识别设置
-private:
-    QScopedPointer<HomeMenuFrmPrivate>d_ptr;
+    QScopedPointer<HomeMenuFrmPrivate> d_ptr;
+    
+#ifdef SCREENCAPTURE
+    void mouseDoubleClickEvent(QMouseEvent*);        
+#endif    
+
 private:
     Q_DECLARE_PRIVATE(HomeMenuFrm)
     Q_DISABLE_COPY(HomeMenuFrm)
-protected:
-#ifdef SCREENCAPTURE  //ScreenCapture     
-    void mouseDoubleClickEvent(QMouseEvent*);    
-#endif     
 };
 
-#endif // HomeMenuFrm_H
+#endif // HOMEMENUFRM_H

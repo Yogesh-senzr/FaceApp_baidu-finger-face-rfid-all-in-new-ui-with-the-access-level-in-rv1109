@@ -21,13 +21,21 @@ public://显示人脸主界面
     Q_SIGNAL void sigModifyUserRefreshGrid();
 public:
     void modifyRecord(QString aName,QString aIDCard,QString aCardNo,QString asex,QString apersonid,QString auuid);
+    void resizeEvent(QResizeEvent *event);
     static inline AddUserFrm *GetInstance(){static AddUserFrm g;return &g;}        
 private:
     int mModify=0;
     QString mPath;
-    bool mDraw;       
+    bool mDraw;  
+    void clearFormAndResetUI();
+    bool storeFingerprintToDatabase(const QString& employeeId, 
+                                    uint16_t fingerId, 
+                                    const QByteArray& fingerTemplate);        
     Q_SLOT void slotCaptureFaceButton();
     Q_SLOT void slotRegFaceButton();
+    Q_SLOT void slotCaptureFingerButton();   // NEW: Capture fingerprint button slot
+    Q_SLOT void slotRegFingerButton();       // NEW: Register fingerprint button slot
+    Q_SLOT void slotDeleteFingerButton();    // NEW: Delete fingerprint button slot
 private://标题返回按钮
     Q_SLOT void slotReturnSuperiorClicked();
     Q_SLOT void slotTextChanged(const QString &);

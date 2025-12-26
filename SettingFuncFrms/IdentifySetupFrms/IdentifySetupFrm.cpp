@@ -1,8 +1,7 @@
+// Modified IdentifySetupFrm.cpp - Card-based theme with AGGRESSIVE dialog transparency fix
+
 #include "IdentifySetupFrm.h"
-
 #include "IdentifyDistanceFrm.h"
-#include "TemperatureModeFrm.h"
-
 #include "../SetupItemDelegate/CItemWidget.h"
 #include "../SetupItemDelegate/CItemBoxWidget.h"
 #include "SettingFuncFrms/SetupItemDelegate/CInputBaseDialog.h"
@@ -10,10 +9,267 @@
 
 #include <QListWidget>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QFrame>
+#include <QLabel>
+#include <QCheckBox>
+#include <QScrollArea>
 #include <QApplication>
 #include <QScreen>
 #include <QDesktopWidget>
 #include <QtConcurrent/QtConcurrent>
+#include <QObject>
+#include <QPixmap>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QTimer>
+
+// Helper function to AGGRESSIVELY force white background on dialogs
+static void ForceDialogWhiteBackground(QDialog *dialog)
+{
+    if (!dialog) return;
+    
+    // Set all possible transparency-preventing attributes
+    dialog->setAttribute(Qt::WA_OpaquePaintEvent, true);
+    dialog->setAutoFillBackground(true);
+    dialog->setAttribute(Qt::WA_TranslucentBackground, false);
+    dialog->setAttribute(Qt::WA_NoSystemBackground, false);
+    dialog->setAttribute(Qt::WA_StyledBackground, true);
+    
+    // Set palette with ALL color roles
+    QPalette p = dialog->palette();
+    p.setColor(QPalette::Window, Qt::white);
+    p.setColor(QPalette::Base, Qt::white);
+    p.setColor(QPalette::Background, Qt::white);
+    p.setColor(QPalette::AlternateBase, Qt::white);
+    dialog->setPalette(p);
+    
+    // AGGRESSIVE stylesheet with !important
+    dialog->setStyleSheet(
+        "QDialog { "
+        "    background-color: white !important; "
+        "    background: white !important; "
+        "} "
+        "QWidget { "
+        "    background-color: white !important; "
+        "} "
+        "QFrame { "
+        "    background-color: white !important; "
+        "} "
+        "QLabel { "
+        "    background-color: transparent; "
+        "} "
+        "QLineEdit { "
+        "    background-color: white; "
+        "    border: 1px solid #ccc; "
+        "} "
+        "QPushButton { "
+        "    background-color: #e0e0e0; "
+        "    border: 1px solid #999; "
+        "    padding: 5px 15px; "
+        "}"
+    );
+    
+    // Force immediate update
+    dialog->update();
+    dialog->repaint();
+    
+    // Also set background on all child widgets
+    QTimer::singleShot(0, [dialog]() {
+        QList<QWidget*> children = dialog->findChildren<QWidget*>();
+        foreach(QWidget* child, children) {
+            if (!qobject_cast<QLabel*>(child) && 
+                !qobject_cast<QLineEdit*>(child) && 
+                !qobject_cast<QPushButton*>(child)) {
+                child->setAutoFillBackground(true);
+                QPalette cp = child->palette();
+                cp.setColor(QPalette::Window, Qt::white);
+                cp.setColor(QPalette::Background, Qt::white);
+                child->setPalette(cp);
+            }
+        }
+        dialog->update();
+    });
+}
+
+// Forward declaration and helper function definition
+static inline QString IdentifyDistanceToSTR(const int &index)
+{
+    switch(index)
+    {
+    case 0: return QString("50cm");
+    case 1: return QString("100cm");
+    default: return QString("150cm");
+    }
+}
+
+// Custom Identity Setting Card Widget
+class IdentitySettingCardWidget : public QFrame
+{
+    Q_OBJECT
+public:
+    enum CardType { ToggleCard, ValueCard };
+    
+    IdentitySettingCardWidget(const QString &title, CardType type, const QString &iconPath = "", QWidget *parent = nullptr)
+        : QFrame(parent), m_title(title), m_cardType(type), m_iconPath(iconPath)
+    {
+        setObjectName("IdentityCardWidget");
+        setupUI(title, type, iconPath);
+    }
+    
+    QString getTitle() const { return m_title; }
+    
+    void setValue(const QString &value)
+    {
+        if (m_cardType == ValueCard && m_valueLabel) {
+            m_valueLabel->setText(value);
+        }
+    }
+    
+    void setToggleState(bool enabled)
+    {
+        if (m_cardType == ToggleCard && m_toggleCheckBox) {
+            m_toggleCheckBox->setChecked(enabled);
+        }
+    }
+    
+    bool getToggleState() const
+    {
+        if (m_cardType == ToggleCard && m_toggleCheckBox) {
+            return m_toggleCheckBox->isChecked();
+        }
+        return false;
+    }
+
+signals:
+    void cardClicked(const QString &title);
+    void toggleChanged(bool enabled);
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (m_cardType == ValueCard) {
+            emit cardClicked(m_title);
+        }
+        QFrame::mousePressEvent(event);
+    }
+    
+    void enterEvent(QEvent *event) override
+    {
+        setProperty("hovered", true);
+        style()->unpolish(this);
+        style()->polish(this);
+        QFrame::enterEvent(event);
+    }
+    
+    void leaveEvent(QEvent *event) override
+    {
+        setProperty("hovered", false);
+        style()->unpolish(this);
+        style()->polish(this);
+        QFrame::leaveEvent(event);
+    }
+private:
+    QString getIconText(const QString &title)
+    {
+        if (title.contains("Living") && title.contains("Detection"))
+            return "";
+        else if (title.contains("Living") && title.contains("Threshold"))
+            return "";
+        else if (title.contains("Comparison") && title.contains("Threshold"))
+            return "";
+        else if (title.contains("Face") && title.contains("Quality"))
+            return "";
+        else if (title.contains("Identification") && title.contains("Interval"))
+            return "";
+        else if (title.contains("Recognition") && title.contains("Distance"))
+            return "";
+        return "";
+    }
+
+private:
+    void setupUI(const QString &title, CardType type, const QString &iconPath)
+    {
+        QHBoxLayout *mainLayout = new QHBoxLayout(this);
+        mainLayout->setContentsMargins(12, 10, 12, 10);
+        mainLayout->setSpacing(12);
+        
+        QFrame *iconFrame = new QFrame;
+        iconFrame->setFixedSize(24, 24);
+        iconFrame->setObjectName(getIconObjectName(title));
+        
+        QHBoxLayout *iconLayout = new QHBoxLayout(iconFrame);
+        iconLayout->setContentsMargins(0, 0, 0, 0);
+        
+        QLabel *iconLabel = new QLabel;
+        iconLabel->setAlignment(Qt::AlignCenter);
+        iconLabel->setObjectName("IdentityIconLabel");
+        
+        if (!iconPath.isEmpty()) {
+            QPixmap iconPixmap(iconPath);
+            if (!iconPixmap.isNull()) {
+                iconPixmap = iconPixmap.scaled(20, 20, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                iconLabel->setPixmap(iconPixmap);
+            } else {
+                iconLabel->setText(getIconText(title));
+            }
+        } else {
+            iconLabel->setText(getIconText(title));
+        }
+        
+        iconLayout->addWidget(iconLabel);
+        
+        QVBoxLayout *textLayout = new QVBoxLayout;
+        textLayout->setSpacing(3);
+        
+        QLabel *titleLabel = new QLabel(title);
+        titleLabel->setObjectName("IdentityTitleLabel");
+        textLayout->addWidget(titleLabel);
+        
+        if (type == ValueCard) {
+            m_valueLabel = new QLabel("--");
+            m_valueLabel->setObjectName("IdentityValueLabel");
+            textLayout->addWidget(m_valueLabel);
+        }
+        
+        QHBoxLayout *rightLayout = new QHBoxLayout;
+        rightLayout->setSpacing(10);
+        
+        if (type == ToggleCard) {
+            m_toggleCheckBox = new QCheckBox;
+            m_toggleCheckBox->setObjectName("IdentityToggleBox");
+            QObject::connect(m_toggleCheckBox, &QCheckBox::toggled, this, &IdentitySettingCardWidget::toggleChanged);
+            rightLayout->addWidget(m_toggleCheckBox);
+        } else {
+            QLabel *arrowLabel = new QLabel("›");
+            arrowLabel->setObjectName("IdentityArrowLabel");
+            rightLayout->addWidget(arrowLabel);
+        }
+        
+        mainLayout->addWidget(iconFrame);
+        mainLayout->addLayout(textLayout);
+        mainLayout->addStretch();
+        mainLayout->addLayout(rightLayout);
+    }
+    
+    QString getIconObjectName(const QString &title)
+    {
+        if (title.contains("Living") || title.contains("Detection"))
+            return "BiometricIconFrame";
+        else if (title.contains("Threshold") || title.contains("Quality"))
+            return "ThresholdIconFrame";
+        else if (title.contains("Interval") || title.contains("Distance"))
+            return "SettingsIconFrame";
+        return "DefaultIconFrame";
+    }
+
+private:
+    QString m_title;
+    CardType m_cardType;
+    QString m_iconPath;
+    QLabel *m_valueLabel = nullptr;
+    QCheckBox *m_toggleCheckBox = nullptr;
+};
 
 class IdentifySetupFrmPrivate
 {
@@ -27,7 +283,11 @@ private:
 public:
     bool CheckTopWidget();
 private:
-    QListWidget *m_pListWidget;
+    QVBoxLayout *m_pMainLayout;
+    QScrollArea *m_pScrollArea;
+    QWidget *m_pContentWidget;
+    QVBoxLayout *m_pContentLayout;
+    QList<IdentitySettingCardWidget*> m_cardWidgets;
 private:
     IdentifySetupFrm *const q_ptr;
 };
@@ -40,243 +300,150 @@ IdentifySetupFrmPrivate::IdentifySetupFrmPrivate(IdentifySetupFrm *dd)
     this->InitConnect();
 }
 
-IdentifySetupFrm::IdentifySetupFrm(QWidget *parent)
-    : SettingBaseFrm(parent)
-    , d_ptr(new IdentifySetupFrmPrivate(this))
-{
-
-}
-
-IdentifySetupFrm::~IdentifySetupFrm()
-{
-
-}
-
 void IdentifySetupFrmPrivate::InitUI()
 {
-    m_pListWidget = new QListWidget;
-    QHBoxLayout *layout = new QHBoxLayout(q_func());
-    layout->setSpacing(0);
-    layout->setMargin(0);
-    layout->addWidget(m_pListWidget);
+    Q_Q(IdentifySetupFrm);
+    
+    q->setObjectName("IdentifySetupMainWidget");
+    
+    m_pMainLayout = new QVBoxLayout(q);
+    m_pMainLayout->setContentsMargins(12, 12, 12, 12); 
+    m_pMainLayout->setSpacing(0);
+    
+    m_pScrollArea = new QScrollArea;
+    m_pScrollArea->setWidgetResizable(true);
+    m_pScrollArea->setFrameShape(QFrame::NoFrame);
+    m_pScrollArea->setObjectName("IdentifySetupScrollArea");
+    
+    m_pContentWidget = new QWidget;
+    m_pContentWidget->setObjectName("IdentifySetupContentWidget");
+    m_pContentLayout = new QVBoxLayout(m_pContentWidget);
+    m_pContentLayout->setContentsMargins(0, 0, 0, 0);
+    m_pContentLayout->setSpacing(6);
+    
+    m_pScrollArea->setWidget(m_pContentWidget);
+    
+    m_pMainLayout->addWidget(m_pScrollArea);
 }
 
 void IdentifySetupFrmPrivate::InitData()
 {
-    int width = QApplication::desktop()->screenGeometry().width();
-    int spacing = 0;
-    switch(width)
+    QStringList cardTitles = {
+        QObject::tr("LivingBodyDetection"),
+        QObject::tr("LivingThreshold"),
+        QObject::tr("ComparisonThreshold"),
+        QObject::tr("FaceQualityThreshold"),
+        QObject::tr("IdentificationInterval"),
+        QObject::tr("RecognitionDistance")
+    };
+    
+    QStringList iconPaths = {
+        ":/icons/living_detection.png",
+        ":/icons/living_threshold.png",
+        ":/icons/comparison_threshold.png",
+        ":/icons/face_quality.png",
+        ":/icons/identification_interval.png",
+        ":/icons/recognition_distance.png"
+    };
+    
+    for(int i = 0; i < cardTitles.count(); i++)
     {
-    case 480:spacing = 14;break;		
-    case 600:spacing = 14;break;
-    case 720:spacing = 26;break;
-    case 800:spacing = 0;break;
+        IdentitySettingCardWidget::CardType type = (i == 0) ? 
+            IdentitySettingCardWidget::ToggleCard : 
+            IdentitySettingCardWidget::ValueCard;
+            
+        QString iconPath = (i < iconPaths.count()) ? iconPaths.at(i) : "";
+        IdentitySettingCardWidget *cardWidget = new IdentitySettingCardWidget(cardTitles.at(i), type, iconPath);
+        
+        switch(i) {
+            case 0:
+                cardWidget->setToggleState(ReadConfig::GetInstance()->getIdentity_Manager_CheckLiving());
+                break;
+            case 1:
+                cardWidget->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Living_value()));
+                break;
+            case 2:
+                cardWidget->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Thanthreshold()));
+                break;
+            case 3:
+                cardWidget->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold()));
+                break;
+            case 4:
+                cardWidget->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_IdentifyInterval()) + "s");
+                break;
+            case 5:
+                cardWidget->setValue(IdentifyDistanceToSTR(ReadConfig::GetInstance()->getIdentity_Manager_Identifycm()));
+                break;
+        }
+        
+        m_cardWidgets.append(cardWidget);
+        m_pContentLayout->addWidget(cardWidget);
     }
-
-    m_pListWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemBoxWidget *pItemWidget = new CItemBoxWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("LivingBodyDetection"), ":/Images/SmallRound.png");//"活体检测"
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("LivingThreshold"), ":/Images/SmallRound.png", "0.7");//活体阈值
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("ComparisonThreshold"), ":/Images/SmallRound.png", "0.8");//比对阈值
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("MaskThreshold"), ":/Images/SmallRound.png", "0.25");//口罩阈值
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("Person-witnessComparisonThreshold"), ":/Images/SmallRound.png", "0.7");//人证比对阈值
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("FaceQualityThreshold"), ":/Images/SmallRound.png", "0.5");//人脸质量阈值
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("IdentificationInterval"), ":/Images/SmallRound.png", "1s");//识别间隔
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("RecognitionDistance"), ":/Images/SmallRound.png", "150cm");//识别距离
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("TemperatureMeasuringEnvironment "), ":/Images/SmallRound.png", QObject::tr("outdoor"));//测温环境,户外
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("temperatureCompensation"), ":/Images/SmallRound.png", "0.0");//温度补偿
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
-    {
-        QListWidgetItem *pItem = new QListWidgetItem;
-        CItemWidget *pItemWidget = new CItemWidget;
-        pItemWidget->setAddSpacing(spacing);
-        pItemWidget->setAddSpacing(10);
-
-        pItemWidget->setData(QObject::tr("AlarmTemperature"), ":/Images/SmallRound.png", "37.3");//报警温度
-		if (width ==480)
-			pItemWidget->setAddSpacing(120);		
-        m_pListWidget->addItem(pItem);
-        m_pListWidget->setItemWidget(pItem, pItemWidget);
-    }
+    
+    m_pContentLayout->addStretch();
 }
 
 void IdentifySetupFrmPrivate::InitConnect()
 {
-    QObject::connect(m_pListWidget, &QListWidget::itemClicked, q_func(), &IdentifySetupFrm::slotIemClicked);
+    for(int i = 0; i < m_cardWidgets.count(); i++)
+    {
+        IdentitySettingCardWidget *card = m_cardWidgets[i];
+        
+        if (i == 0) {
+            QObject::connect(card, &IdentitySettingCardWidget::toggleChanged, 
+                   [](bool enabled) {
+                ReadConfig::GetInstance()->setIdentity_Manager_CheckLiving(enabled ? 1 : 0);
+            });
+        } else {
+            QObject::connect(card, &IdentitySettingCardWidget::cardClicked, 
+                   [this, i](const QString &title) {
+                Q_UNUSED(title);
+                Q_Q(IdentifySetupFrm);
+                q->handleCardClicked(i);
+            });
+        }
+    }
 }
 
 bool IdentifySetupFrmPrivate::CheckTopWidget()
 {
     foreach (QWidget *w, qApp->topLevelWidgets()) {
-        if(w->objectName() == "InputBaseDialog")return true;
+        if(w->objectName() == "InputBaseDialog") return true;
     }
     return false;
 }
 
-static inline QString IdentifyDistanceToSTR(const int &index)
+IdentifySetupFrm::IdentifySetupFrm(QWidget *parent)
+    : SettingBaseFrm(parent)
+    , d_ptr(new IdentifySetupFrmPrivate(this))
 {
-    switch(index)
-    {
-    case 0: return QString("50cm");
-    case 1: return QString("100cm");
-    default :return QString("150cm");
-    }
 }
-static inline QString TemperatureModeToSTR(const int &index)
+
+IdentifySetupFrm::~IdentifySetupFrm()
 {
-    switch(index)
-    {
-    case 0: return QObject::tr("interior");//室内
-    case 1: return QObject::tr("outdoor");//户外
-    default :return QObject::tr("interior");//室内
-    }
 }
 
 void IdentifySetupFrm::setEnter()
 {
     Q_D(IdentifySetupFrm);
-    //活体检测
-    ((CItemBoxWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(0)))->setCheckBoxState(ReadConfig::GetInstance()->getIdentity_Manager_CheckLiving());
-    //活体阈值
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(1)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Living_value()));
-    //比对阈值
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(2)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Thanthreshold()));
-    //口罩阈值
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(3)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Mask_value()));
-    //身份证比对阈值
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(4)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_idcardThanthreshold()));
-    //人脸质量阈值
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(5)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold()));
-    //识别间隔
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(6)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_IdentifyInterval()) + "s");
-    //识别距离
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(7)))->setRNameText(IdentifyDistanceToSTR(ReadConfig::GetInstance()->getIdentity_Manager_Identifycm()));
-    //测温环境
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(8)))->setRNameText(TemperatureModeToSTR(ReadConfig::GetInstance()->getIdentity_Manager_TemperatureMode()));
-    //温度补偿
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(9)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_TempComp()));
-    //报警温度
-    ((CItemWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(10)))->setRNameText(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_AlarmTemp()));
+    
+    if (d->m_cardWidgets.count() >= 6) {
+        d->m_cardWidgets[0]->setToggleState(ReadConfig::GetInstance()->getIdentity_Manager_CheckLiving());
+        d->m_cardWidgets[1]->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Living_value()));
+        d->m_cardWidgets[2]->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_Thanthreshold()));
+        d->m_cardWidgets[3]->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold()));
+        d->m_cardWidgets[4]->setValue(QString::number(ReadConfig::GetInstance()->getIdentity_Manager_IdentifyInterval()) + "s");
+        d->m_cardWidgets[5]->setValue(IdentifyDistanceToSTR(ReadConfig::GetInstance()->getIdentity_Manager_Identifycm()));
+    }
 }
 
 void IdentifySetupFrm::setLeaveEvent()
 {
     Q_D(IdentifySetupFrm);
-    //活体检测
-    ReadConfig::GetInstance()->setIdentity_Manager_CheckLiving(((CItemBoxWidget *)d->m_pListWidget->itemWidget(d->m_pListWidget->item(0)))->getCheckBoxState() ? 1 : 0);
+    
     foreach (QWidget *w, qApp->topLevelWidgets()) {
         if(w->objectName() == "InputBaseDialog")
-        {//如果存在顶层用户未关闭的窗口， 使其不可见
+        {
             QDialog *dlg = (QDialog *)w;
             dlg->done(1);
         }
@@ -285,138 +452,125 @@ void IdentifySetupFrm::setLeaveEvent()
     QtConcurrent::run(ReadConfig::GetInstance(), &ReadConfig::setSaveConfig);
 }
 
-void IdentifySetupFrm::slotIemClicked(QListWidgetItem *item)
+void IdentifySetupFrm::handleCardClicked(int cardIndex)
 {
     Q_D(IdentifySetupFrm);
-#ifdef SCREENCAPTURE  //ScreenCapture       
+    
+#ifdef SCREENCAPTURE
     grab().save(QString("/mnt/user/screenshot/%1.png").arg(this->metaObject()->className()),"png");   
 #endif    
-    if(d->CheckTopWidget())return;
-    else if(item == d->m_pListWidget->item(1))
-    {//活体阈值
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("LivingThreshold"));////活体阈值
-        dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
-        dlg.setFloatValidator(0.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
+
+    if(d->CheckTopWidget()) return;
+    
+    switch(cardIndex) {
+        case 1: // Living Threshold
         {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_Living_value(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
+            CInputBaseDialog dlg(this);
+            ForceDialogWhiteBackground(&dlg);  // USE HELPER FUNCTION
+            
+            dlg.setTitleText(QObject::tr("LivingThreshold"));
+            dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
+            dlg.setFloatValidator(0.0, 1.0);
+            dlg.show();
+            
+            // Force again after show
+            ForceDialogWhiteBackground(&dlg);
+            
+            if(dlg.exec() == 0)
+            {
+                QString data = dlg.getData();
+                ReadConfig::GetInstance()->setIdentity_Manager_Living_value(data.toFloat());
+                d->m_cardWidgets[1]->setValue(data);
+            }
+            break;
         }
-    }else if(item == d->m_pListWidget->item(2))
-    {//比对阈值
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("ComparisonThreshold"));//"比对阈值"
-        dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
-        dlg.setFloatValidator(0.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
+        case 2: // Comparison Threshold
         {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_Thanthreshold(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
+            CInputBaseDialog dlg(this);
+            ForceDialogWhiteBackground(&dlg);
+            
+            dlg.setTitleText(QObject::tr("ComparisonThreshold"));
+            dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
+            dlg.setFloatValidator(0.0, 1.0);
+            dlg.show();
+            
+            ForceDialogWhiteBackground(&dlg);
+            
+            if(dlg.exec() == 0)
+            {
+                QString data = dlg.getData();
+                ReadConfig::GetInstance()->setIdentity_Manager_Thanthreshold(data.toFloat());
+                d->m_cardWidgets[2]->setValue(data);
+            }
+            break;
         }
-    }else if(item == d->m_pListWidget->item(3))
-    {//口罩阈值
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("MaskThreshold"));//"口罩阈值"
-        dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
-        dlg.setFloatValidator(0.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
+        case 3: // Face Quality Threshold
         {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_Mask_value(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
+            CInputBaseDialog dlg(this);
+            ForceDialogWhiteBackground(&dlg);
+            
+            dlg.setTitleText(QObject::tr("FaceQualityThreshold"));
+            dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
+            dlg.setFloatValidator(0.0, 1.0);
+            dlg.show();
+            
+            ForceDialogWhiteBackground(&dlg);
+            
+            if(dlg.exec() == 0)
+            {
+                QString data = dlg.getData();
+                ReadConfig::GetInstance()->setIdentity_Manager_FqThreshold(data.toFloat());
+                d->m_cardWidgets[3]->setValue(data);
+            }
+            break;
         }
-    }else if(item == d->m_pListWidget->item(4))
-    {//身份证比对阈值
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("Person-witnessComparisonThreshold"));//"人证比对阈值"
-        dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
-        dlg.setFloatValidator(0.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
+        case 4: // Identification Interval
         {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_idcardThanthreshold(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
+            CInputBaseDialog dlg(this);
+            ForceDialogWhiteBackground(&dlg);
+            
+            dlg.setTitleText(QObject::tr("IdentificationInterval"));
+            dlg.setPlaceholderText(QObject::tr("0~7200s"));
+            dlg.setIntValidator(0, 7200);
+            dlg.show();
+            
+            ForceDialogWhiteBackground(&dlg);
+            
+            if(dlg.exec() == 0)
+            {
+                QString data = dlg.getData();
+                ReadConfig::GetInstance()->setIdentity_Manager_IdentifyInterval(data.toInt());
+                d->m_cardWidgets[4]->setValue(data + "s");
+            }
+            break;
         }
-    }else if(item == d->m_pListWidget->item(5))
-    {//人脸质量阈值
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("FaceQualityThreshold"));//"人脸质量阈值"
-        dlg.setPlaceholderText(QObject::tr("0.0~1.0"));
-        dlg.setFloatValidator(0.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
+        case 5: // Recognition Distance
         {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_FqThreshold(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
-        }
-    }else if(item == d->m_pListWidget->item(6))
-    {//识别间隔
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("IdentificationInterval"));//"识别间隔"
-        dlg.setPlaceholderText(QObject::tr("0~7200s"));
-        dlg.setIntValidator(0, 7200);
-        dlg.show();
-        if(dlg.exec() == 0)
-        {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_IdentifyInterval(data.toInt());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data + "s");
-        }
-    }else if(item == d->m_pListWidget->item(7))
-    {//识别距离
-        IdentifyDistanceFrm dlg(this);
-        if(dlg.exec() == 0)
-        {
-            ReadConfig::GetInstance()->setIdentity_Manager_Identifycm(dlg.getDistanceMode());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(IdentifyDistanceToSTR(dlg.getDistanceMode()));
-        }
-    }else if(item == d->m_pListWidget->item(8))
-    {//测温环境
-        TemperatureModeFrm dlg(this);
-        if(dlg.exec() == 0)
-        {
-            ReadConfig::GetInstance()->setIdentity_Manager_TemperatureMode(dlg.getTemperatureMode());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(TemperatureModeToSTR(dlg.getTemperatureMode()));
-        }
-    }else if(item == d->m_pListWidget->item(9))
-    {//温度补偿
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("temperatureCompensation"));//温度补偿
-        dlg.setPlaceholderText("-1.0~1.0");
-        dlg.setFloatValidator(-1.0, 1.0);
-        dlg.show();
-        if(dlg.exec() == 0)
-        {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_TempComp(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
-        }
-    }else if(item == d->m_pListWidget->item(10))
-    {//报警温度
-        CInputBaseDialog dlg(this);
-        dlg.setTitleText(QObject::tr("AlarmTemperature"));//报警温度
-        dlg.setPlaceholderText(QObject::tr("Suchas:37.3"));//QObject::tr("例如:37.3")
-        dlg.setFloatValidator(0.0, 100.0);
-        dlg.show();
-        if(dlg.exec() == 0)
-        {
-            QString data = dlg.getData();
-            ReadConfig::GetInstance()->setIdentity_Manager_AlarmTemp(data.toFloat());
-            ((CItemWidget *)d->m_pListWidget->itemWidget(item))->setRNameText(data);
+            IdentifyDistanceFrm dlg(this);
+            ForceDialogWhiteBackground(&dlg);
+            
+            dlg.show();
+            ForceDialogWhiteBackground(&dlg);
+            
+            if(dlg.exec() == 0)
+            {
+                ReadConfig::GetInstance()->setIdentity_Manager_Identifycm(dlg.getDistanceMode());
+                d->m_cardWidgets[5]->setValue(IdentifyDistanceToSTR(dlg.getDistanceMode()));
+            }
+            break;
         }
     }
 }
-#ifdef SCREENCAPTURE  //ScreenCapture   
+
+void IdentifySetupFrm::slotIemClicked(QListWidgetItem *item)
+{
+}
+
+#ifdef SCREENCAPTURE
 void IdentifySetupFrm::mouseDoubleClickEvent(QMouseEvent* event)
 {
     grab().save(QString("/mnt/user/screenshot/%1.png").arg(this->metaObject()->className()),"png");   
-}	
+}
 #endif
+
+#include "IdentifySetupFrm.moc"

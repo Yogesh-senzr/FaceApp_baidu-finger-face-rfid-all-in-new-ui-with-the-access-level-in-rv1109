@@ -39,6 +39,12 @@ void powerManagerThread::setFillLightMode(const int &mode)
 void powerManagerThread::setIdentifyState(const bool state)
 {
     Q_UNUSED(state);
+    
+    // Don't interfere if recognition is manually controlled
+    if (mRecognitionInProgress) {
+        return;
+    }
+    
 #if 1
     if(this->mFillLightMode)
     {
@@ -57,6 +63,11 @@ void powerManagerThread::setIdentifyState(const bool state)
 #endif
     }
 #endif
+}
+
+void powerManagerThread::setRecognitionInProgress(bool inProgress)
+{
+    mRecognitionInProgress = inProgress;
 }
 
 void powerManagerThread::slotDisMissMessage(const bool state)

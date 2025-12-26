@@ -3,7 +3,6 @@
 #include "PCIcore/RkUtils.h"
 #include "SharedInclude/GlobalDef.h"
 #include "HttpServer/ConnHttpServerThread.h"
-
 #include "interface/bface_types.h"
 #include "helper/face_utils.hpp"
 #include "helper/image_convert.hpp"
@@ -40,7 +39,11 @@
 #include <QReadWriteLock>
 #include <QBuffer>
 #include <QPixmap>
-
+#include <chrono>
+#include <time.h>
+#include <stdexcept>
+#include <QDir>
+#include <QFileInfo>
 //#define NSCALE (16)
 //#define FACENUM (5)
 //#define MAX_THREAD  (15)
@@ -55,7 +58,6 @@
 #define MAX_FACES (10)
 
 #define MOK 0
-
 
 
 //算法默认阈值
@@ -330,11 +332,11 @@ bool BaiduFaceManager::getRegFaceState()
     return d->mRegFaceState;
 }
 
-void BaiduFaceManager::setIdentifyState(const bool &state)
+/*void BaiduFaceManager::setIdentifyState(const bool &state)
 {
     Q_D(BaiduFaceManager);
     if(state != d->mIdentifyState)d->mIdentifyState = state;
-}
+}*/
 
 void BaiduFaceManager::setLivenessThreshold(const float &rgbThreshold, const float &irThreshold)
 {
@@ -383,24 +385,39 @@ static void * reportDeviceThreadFunc(void *data)
     pthread_exit(NULL);
 }
 
-bool BaiduFaceManager::getAlgoFaceInitState()const
+bool BaiduFaceManager::getAlgoFaceInitState() const
 {
-//    LogD("%s %s[%d] getAlgoFaceInitState  mInitEngineSuccess %d ...\n", __FILE__, __FUNCTION__, __LINE__,d_func()->mInitEngineSuccess);
-	if(d_func()->mInitEngineSuccess == 1)
-	{
-		static bool isReportDeviceInfo = false;
-		//static unsigned int nReportDeivceInfoCount = 0;
-		if(isReportDeviceInfo == false /**&& nReportDeivceInfoCount++ < 3**/)
-		{
-			//上报设备信息
-            if(!reportDeviceThread){
-                pthread_create(&reportDeviceThread,NULL,reportDeviceThreadFunc,&isReportDeviceInfo);
+    static time_t last_check = 0;
+    time_t current_time = time(nullptr);
+    
+    // Log engine state every 60 seconds
+    if (current_time - last_check > 60) {
+        LogD("%s %s[%d] === ENGINE HEALTH CHECK === State: %d, Time: %ld\n",
+            __FILE__, __FUNCTION__, __LINE__, d_func()->mInitEngineSuccess, current_time);
+        last_check = current_time;
+    }
+    
+    bool result = d_func()->mInitEngineSuccess == 1;
+    
+    if (result) {
+        static bool first_success = true;
+        if (first_success) {
+            LogD("%s %s[%d] === ENGINE SUCCESSFULLY INITIALIZED ===\n", __FILE__, __FUNCTION__, __LINE__);
+            first_success = false;
+        }
+        
+        static bool isReportDeviceInfo = false;
+        if (isReportDeviceInfo == false) {
+            if (!reportDeviceThread) {
+                LogD("%s %s[%d] Starting device report thread...\n", __FILE__, __FUNCTION__, __LINE__);
+                pthread_create(&reportDeviceThread, NULL, reportDeviceThreadFunc, &isReportDeviceInfo);
                 pthread_detach(reportDeviceThread);
             }
             pthread_cond_signal(&reportDeviceThreadCond);
-		}
-	}
-    return d_func()->mInitEngineSuccess == 1;
+        }
+    }
+    
+    return result;
 }
 
 int BaiduColorSpaceConvert(MInt32 width, MInt32 height, MInt32 format, MUInt8 *imgData, ASVLOFFSCREEN &offscreen)
@@ -520,14 +537,14 @@ void BaiduFaceManagerPrivate::InitFaceEngine()
     myHelper::Utils_ExecCmd("rm -rf /isc/models_encrypted/license.key");
     myHelper::Utils_ExecCmd("sync");
 
-    LogD("%s %s[%d] bd_sdk_init status :%d.,Mode=%d\n", __FILE__, __FUNCTION__, __LINE__, status,Mode);
+    //LogD("%s %s[%d] bd_sdk_init status :%d.,Mode=%d\n", __FILE__, __FUNCTION__, __LINE__, status,Mode);
 	if (bface::BFACE_SUCCESS != status)
 	{
 		return ;
 	}
 	
 	status = bface::bface_init();
-	LogD("%s %s[%d] bface_init status :%d.\n", __FILE__, __FUNCTION__, __LINE__, status);
+	//LogD("%s %s[%d] bface_init status :%d.\n", __FILE__, __FUNCTION__, __LINE__, status);
 	if (bface::BFACE_SUCCESS != status)
 	{
 		LogE("%s %s[%d] bface_init() failed.\n", __FILE__, __FUNCTION__, __LINE__);
@@ -638,6 +655,416 @@ bool BaiduFaceManagerPrivate::CheckRange(const CORE_FACE_S &face)
     }
         break;
     }
+    return true;
+}
+
+bool BaiduFaceManager::getLastDetectedFaceRect(QRect &faceRect)
+{
+    Q_D(BaiduFaceManager);
+    
+    if (m_hasFaceRect) {
+        faceRect = m_lastFaceRect;
+        return true;
+    }
+    return false;
+}
+
+bool BaiduFaceManager::cropAndSaveFaceImage(const QString &employeeId, const QString &sourceImagePath)
+{
+    Q_D(BaiduFaceManager);
+    
+    LogD("%s %s[%d] === Starting cropAndSaveFaceImage ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] Employee ID: %s\n", __FILE__, __FUNCTION__, __LINE__, employeeId.toStdString().c_str());
+    LogD("%s %s[%d] Source image path: %s\n", __FILE__, __FUNCTION__, __LINE__, sourceImagePath.toStdString().c_str());
+    
+    if (employeeId.isEmpty() || sourceImagePath.isEmpty()) {
+        LogE("%s %s[%d] Invalid parameters\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Check if source file exists
+    if (access(sourceImagePath.toStdString().c_str(), F_OK)) {
+        LogE("%s %s[%d] Source file does not exist: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, sourceImagePath.toStdString().c_str());
+        return false;
+    }
+    
+    // Load the image using OpenCV (similar to your RegistPerson function)
+    cv::Mat img_mat = cv::imread(sourceImagePath.toStdString());
+    if (img_mat.empty()) {
+        LogE("%s %s[%d] Failed to load image: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, sourceImagePath.toStdString().c_str());
+        return false;
+    }
+    
+    // Set up image for face detection
+    Image_t img2;
+    img2.pixel_format = BFACE_INTERLEAVE_U8C3_BGR;
+    img2.image_type = BFACE_IMAGE_RGB;
+    img2.width = img_mat.cols;
+    img2.height = img_mat.rows;
+    img2.vir_addr[0] = (bface_pointer_type)img_mat.data;
+    
+    // Detect face to get bounding box
+    std::vector<BoundingBox_t> bbox_list;
+    bface::BFACE_STATUS status = bface_detect_face(img2, &bbox_list);
+    
+    if (status != BFACE_SUCCESS || bbox_list.size() == 0) {
+        LogE("%s %s[%d] Face detection failed or no face found\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Get the face rectangle from the first detected face
+    BoundingBox_t face_bbox = bbox_list[0];
+    
+    // Convert to QRect and store for later use
+    m_lastFaceRect = QRect(
+        face_bbox.rect.left,
+        face_bbox.rect.top,
+        face_bbox.rect.width,
+        face_bbox.rect.height
+    );
+    m_hasFaceRect = true;
+    
+    LogD("%s %s[%d] Detected face at: (%d,%d,%d,%d)\n", 
+         __FILE__, __FUNCTION__, __LINE__, 
+         m_lastFaceRect.x(), m_lastFaceRect.y(), 
+         m_lastFaceRect.width(), m_lastFaceRect.height());
+    
+    // Add padding around face (15% on each side for better framing)
+    int padding_x = m_lastFaceRect.width() * 0.15;
+    int padding_y = m_lastFaceRect.height() * 0.15;
+    
+    QRect paddedRect(
+        qMax(0, m_lastFaceRect.x() - padding_x),
+        qMax(0, m_lastFaceRect.y() - padding_y),
+        qMin(img_mat.cols - m_lastFaceRect.x() + padding_x, m_lastFaceRect.width() + 2 * padding_x),
+        qMin(img_mat.rows - m_lastFaceRect.y() + padding_y, m_lastFaceRect.height() + 2 * padding_y)
+    );
+    
+    // Ensure crop rectangle is within image bounds
+    paddedRect = paddedRect.intersected(QRect(0, 0, img_mat.cols, img_mat.rows));
+    
+    // Crop the face region using OpenCV
+    cv::Rect crop_rect(paddedRect.x(), paddedRect.y(), paddedRect.width(), paddedRect.height());
+    cv::Mat cropped_image = img_mat(crop_rect);
+    
+    // Create output directory if it doesn't exist
+    QString dirPath = "/mnt/user/reg_face_image";
+    QDir dir;
+    if (!dir.exists(dirPath)) {
+        if (!dir.mkpath(dirPath)) {
+            LogE("%s %s[%d] Failed to create directory: %s\n", 
+                 __FILE__, __FUNCTION__, __LINE__, dirPath.toStdString().c_str());
+            return false;
+        }
+        LogD("%s %s[%d] Created directory: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, dirPath.toStdString().c_str());
+    }
+    
+    // Save the cropped image
+    QString outputPath = QString("/mnt/user/reg_face_image/%1.jpg").arg(employeeId);
+    
+    // Set JPEG quality to 95% for high quality
+    std::vector<int> compression_params;
+    compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
+    compression_params.push_back(95);
+    
+    bool saveResult = cv::imwrite(outputPath.toStdString(), cropped_image, compression_params);
+    
+    if (saveResult) {
+        LogD("%s %s[%d] Successfully saved cropped face image: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str());
+        
+        // Sync to ensure data is written to disk
+        system("sync");
+        
+        // Verify file was created
+        QFileInfo fileInfo(outputPath);
+        if (fileInfo.exists()) {
+            LogD("%s %s[%d] File verification successful: %s (size: %lld bytes)\n", 
+                 __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str(), fileInfo.size());
+            return true;
+        } else {
+            LogE("%s %s[%d] File verification failed: %s\n", 
+                 __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str());
+            return false;
+        }
+    } else {
+        LogE("%s %s[%d] Failed to save cropped image: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str());
+        return false;
+    }
+}
+
+bool BaiduFaceManager::cropCurrentFaceAndSave(const QString &employeeId)
+{
+    Q_D(BaiduFaceManager);
+    
+    LogD("%s %s[%d] === Starting cropCurrentFaceAndSave ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] Employee ID: %s\n", __FILE__, __FUNCTION__, __LINE__, employeeId.toStdString().c_str());
+    
+    if (employeeId.isEmpty()) {
+        LogE("%s %s[%d] Employee ID is empty\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Check if we have current face data
+    if (d->mMatchCoreFace.stFaceRect.nWidth <= 0 || d->mMatchCoreFace.stFaceRect.nHeight <= 0) {
+        LogE("%s %s[%d] No valid face data available\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Use the existing saveFaceImgToDisk function but modify the path
+    QString outputPath = QString("/mnt/user/reg_face_image/%1.jpg").arg(employeeId);
+    
+    // Create directory if it doesn't exist
+    QString dirPath = "/mnt/user/reg_face_image";
+    QDir dir;
+    if (!dir.exists(dirPath)) {
+        if (!dir.mkpath(dirPath)) {
+            LogE("%s %s[%d] Failed to create directory: %s\n", 
+                 __FILE__, __FUNCTION__, __LINE__, dirPath.toStdString().c_str());
+            return false;
+        }
+    }
+    
+    // Use the existing cropping logic from saveFaceImgToDisk
+    unsigned char* pTmpBuf = (unsigned char*) YNH_LJX::RkUtils::Utils_Malloc(mDeskWidth * mDeskHeight * 3 / 2);
+    unsigned char* pTmpBuf_1 = (unsigned char*) YNH_LJX::RkUtils::Utils_Malloc(mDeskWidth * mDeskHeight * 3 / 2);
+    
+    if (pTmpBuf == NULL || pTmpBuf_1 == NULL) {
+        LogE("%s %s[%d] Memory allocation failed\n", __FILE__, __FUNCTION__, __LINE__);
+        if (pTmpBuf) free(pTmpBuf);
+        if (pTmpBuf_1) free(pTmpBuf_1);
+        return false;
+    }
+    
+    int x, y, width, height;
+    x = d->mMatchCoreFace.stFaceRect.nX;
+    y = d->mMatchCoreFace.stFaceRect.nY;
+    width = d->mMatchCoreFace.stFaceRect.nWidth;
+    height = d->mMatchCoreFace.stFaceRect.nHeight;
+    
+    // Add padding around face (20% for better framing)
+    int padding_x = width * 0.2;
+    int padding_y = height * 0.2;
+    
+    x = qMax(0, x - padding_x);
+    y = qMax(0, y - padding_y);
+    width = qMin(mDeskWidth - x, width + 2 * padding_x);
+    height = qMin(mDeskHeight - y, height + 2 * padding_y);
+    
+    // Ensure even dimensions for YUV processing
+    x = x + (x % 2 ? -1 : 0);
+    y = y + (y % 2 ? -1 : 0);
+    if ((width % 4) != 0)
+        width = 4 * ((width / 4));
+    if ((height % 4) != 0)
+        height = 4 * ((height / 4));
+    
+    // Boundary checks
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if ((x + width) > mDeskWidth) width = (mDeskWidth - x);
+    if ((y + height) > mDeskHeight) height = (mDeskHeight - y);
+    
+    LogD("%s %s[%d] Cropping region: (%d,%d,%d,%d)\n", 
+         __FILE__, __FUNCTION__, __LINE__, x, y, width, height);
+    
+    // Crop the image
+    int result = YNH_LJX::RkUtils::NV21CutImage(
+        (unsigned char*)d->mMatchCoreFace.FaceOffscreen.ppu8Plane[0], 
+        mDeskWidth, mDeskHeight, 
+        pTmpBuf, width * height * 3 / 2, 
+        x, y, x + width, y + height
+    );
+    
+    if (result < 0) {
+        LogE("%s %s[%d] Image cropping failed\n", __FILE__, __FUNCTION__, __LINE__);
+        YNH_LJX::RkUtils::Utils_Free(pTmpBuf);
+        YNH_LJX::RkUtils::Utils_Free(pTmpBuf_1);
+        return false;
+    }
+    
+    // Convert color format
+    YNH_LJX::RkUtils::Utils_YVU420SPConvertToYUV420P((unsigned long)pTmpBuf, (unsigned long)pTmpBuf_1, width, height);
+    
+    // Save as JPEG with high quality
+    YNH_LJX::RkUtils::YUVtoJPEG(outputPath.toLatin1(), (unsigned char*)pTmpBuf_1, width, height, 95);
+    
+    // Cleanup
+    YNH_LJX::RkUtils::Utils_Free(pTmpBuf);
+    YNH_LJX::RkUtils::Utils_Free(pTmpBuf_1);
+    
+    // Sync to disk
+    system("sync");
+    
+    // Verify file was created
+    QFileInfo fileInfo(outputPath);
+    if (fileInfo.exists()) {
+        LogD("%s %s[%d] Successfully saved cropped current face: %s (size: %lld bytes)\n", 
+             __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str(), fileInfo.size());
+        return true;
+    } else {
+        LogE("%s %s[%d] File verification failed: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, outputPath.toStdString().c_str());
+        return false;
+    }
+}
+
+bool BaiduFaceManager::extractFeaturesFromCroppedImage(const QString &employeeId, QByteArray &faceFeature, double &quality)
+{
+    LogD("%s %s[%d] === Starting extractFeaturesFromCroppedImage ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] Employee ID: %s\n", __FILE__, __FUNCTION__, __LINE__, employeeId.toStdString().c_str());
+    
+    if (employeeId.isEmpty()) {
+        LogE("%s %s[%d] Employee ID is empty\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Construct path to saved cropped image
+    QString croppedImagePath = QString("/mnt/user/reg_face_image/%1.jpg").arg(employeeId);
+    
+    // Check if cropped image exists
+    if (access(croppedImagePath.toStdString().c_str(), F_OK)) {
+        LogE("%s %s[%d] Cropped image not found: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, croppedImagePath.toStdString().c_str());
+        return false;
+    }
+    
+    LogD("%s %s[%d] Processing cropped image: %s\n", 
+         __FILE__, __FUNCTION__, __LINE__, croppedImagePath.toStdString().c_str());
+    
+    // Extract features from the cropped image
+    return extractFeaturesFromImagePath(croppedImagePath, faceFeature, quality);
+}
+
+bool BaiduFaceManager::extractFeaturesFromImagePath(const QString &imagePath, QByteArray &faceFeature, double &quality)
+{
+    Q_D(BaiduFaceManager);
+    
+    LogD("%s %s[%d] === Starting extractFeaturesFromImagePath ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] Image path: %s\n", __FILE__, __FUNCTION__, __LINE__, imagePath.toStdString().c_str());
+    
+    if (imagePath.isEmpty()) {
+        LogE("%s %s[%d] Image path is empty\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Check if image file exists
+    if (access(imagePath.toStdString().c_str(), F_OK)) {
+        LogE("%s %s[%d] Image file not found: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, imagePath.toStdString().c_str());
+        return false;
+    }
+    
+    // Load the cropped image using OpenCV
+    cv::Mat img_mat = cv::imread(imagePath.toStdString());
+    if (img_mat.empty()) {
+        LogE("%s %s[%d] Failed to load image: %s\n", 
+             __FILE__, __FUNCTION__, __LINE__, imagePath.toStdString().c_str());
+        return false;
+    }
+    
+    LogD("%s %s[%d] Image loaded successfully: %dx%d\n", 
+         __FILE__, __FUNCTION__, __LINE__, img_mat.cols, img_mat.rows);
+    
+    // Set up image structure for Baidu SDK
+    Image_t img_baidu;
+    img_baidu.pixel_format = BFACE_INTERLEAVE_U8C3_BGR;
+    img_baidu.image_type = BFACE_IMAGE_RGB;
+    img_baidu.width = img_mat.cols;
+    img_baidu.height = img_mat.rows;
+    img_baidu.vir_addr[0] = (bface_pointer_type)img_mat.data;
+    
+    // Step 1: Detect face in cropped image
+    std::vector<BoundingBox_t> bbox_list;
+    bface::BFACE_STATUS status = bface_detect_face(img_baidu, &bbox_list);
+    
+    if (status != BFACE_SUCCESS) {
+        LogE("%s %s[%d] Face detection failed with status: %d\n", 
+             __FILE__, __FUNCTION__, __LINE__, status);
+        return false;
+    }
+    
+    if (bbox_list.size() == 0) {
+        LogE("%s %s[%d] No face detected in cropped image\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    if (bbox_list.size() > 1) {
+        LogE("%s %s[%d] Multiple faces detected (%d), using the first one\n", 
+             __FILE__, __FUNCTION__, __LINE__, (int)bbox_list.size());
+    }
+    
+    LogD("%s %s[%d] Face detected successfully in cropped image\n", __FILE__, __FUNCTION__, __LINE__);
+    
+    // Step 2: Extract facial landmarks
+    Landmark_t landmarks;
+    status = bface_alignment(img_baidu, bbox_list[0], &landmarks);
+    
+    if (status != BFACE_SUCCESS) {
+        LogE("%s %s[%d] Face alignment failed with status: %d\n", 
+             __FILE__, __FUNCTION__, __LINE__, status);
+        return false;
+    }
+    
+    LogD("%s %s[%d] Face alignment successful\n", __FILE__, __FUNCTION__, __LINE__);
+    
+    // Step 3: Calculate face quality score
+    float quality_score = 0.0f;
+    status = bface_quality_score(img_baidu, bbox_list[0], &quality_score);
+    
+    if (status != BFACE_SUCCESS) {
+        LogE("%s %s[%d] Quality score calculation failed with status: %d\n", 
+             __FILE__, __FUNCTION__, __LINE__, status);
+        return false;
+    }
+    
+    quality = quality_score;
+    LogD("%s %s[%d] Face quality score: %f\n", __FILE__, __FUNCTION__, __LINE__, quality_score);
+    
+    // Check if quality meets minimum threshold
+    float minQuality = ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold();
+    if (quality_score < minQuality) {
+        LogE("%s %s[%d] Face quality too low: %f (minimum: %f)\n", 
+             __FILE__, __FUNCTION__, __LINE__, quality_score, minQuality);
+        return false;
+    }
+    
+    // Step 4: Extract face features
+    std::vector<Byte_t> feature_vector;
+    
+    LogD("%s %s[%d] Starting feature extraction...\n", __FILE__, __FUNCTION__, __LINE__);
+    auto extract_start = std::chrono::high_resolution_clock::now();
+    
+    status = bface_extract_feature(img_baidu, landmarks, &feature_vector);
+    
+    auto extract_end = std::chrono::high_resolution_clock::now();
+    auto extract_duration = std::chrono::duration_cast<std::chrono::milliseconds>(extract_end - extract_start);
+    
+    if (status != BFACE_SUCCESS) {
+        LogE("%s %s[%d] Feature extraction failed with status: %d\n", 
+             __FILE__, __FUNCTION__, __LINE__, status);
+        return false;
+    }
+    
+    if (feature_vector.empty()) {
+        LogE("%s %s[%d] Feature vector is empty\n", __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    LogD("%s %s[%d] Feature extraction successful: %d bytes in %lld ms\n", 
+         __FILE__, __FUNCTION__, __LINE__, (int)feature_vector.size(), extract_duration.count());
+    
+    // Step 5: Convert to QByteArray
+    faceFeature = QByteArray(reinterpret_cast<const char*>(feature_vector.data()), feature_vector.size());
+    
+    LogD("%s %s[%d] === Feature extraction completed successfully ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] Final results - Feature size: %d bytes, Quality: %f\n", 
+         __FILE__, __FUNCTION__, __LINE__, faceFeature.size(), quality);
+    
     return true;
 }
 
@@ -782,81 +1209,106 @@ void BaiduFaceManagerPrivate::CheckMaskDetecct()
 
 void BaiduFaceManagerPrivate::CheckLivenessDetect()
 {//检测活体
-    // 0:非真人；
-    // 1:真人；
-    // -1：不确定；
-    //-2:传入人脸数 > 1；
-    //-3: 人脸过小；
-    //-4: 角度过大；
-    //-5: 人脸超出边界；
-    //-6: 深度图错误；
-    //:-7: //红外稍微远一点图片不太完整会返回 -7，认为是活体
     int ret = -1;
     int nLiveness = -1;
-
-
     int m_nDetectLivenessWaitFrame = 7; //每隔多少帧检测一次活体
+
+ 
 
 	{
 		pthread_mutex_lock(&m_stCoreFacesLock);
         
         if ((mMatchCoreFace.attr_info.liveness_ir == 0) && ((m_stFace->nFaceFrameCounter % m_nDetectLivenessWaitFrame) == 0))
 		{
+
+				
 			std::vector<BoundingBox_t> bboxList;
 			BFACE_STATUS status;
+			
+			auto detect_start = std::chrono::high_resolution_clock::now();
 			status = bface_detect_face(m_stIRImg, &bboxList);
+			auto detect_end = std::chrono::high_resolution_clock::now();
+			auto detect_duration = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start);
+			
 			if (status != BFACE_SUCCESS)
 			{
+
 				pthread_mutex_unlock(&m_stCoreFacesLock);
 				return;
 			}
+			
+	
            
 			int idx = match_bbox_iou(bboxList, q_func()->stTrackedFaceList[q_func()->nMatchCoreFaceIndex].bbox, 0.3);
 			if (idx < 0)
 			{
+			
 				pthread_mutex_unlock(&m_stCoreFacesLock);
 				return;
 			}
 
 			Landmark_t stIrLandmarks;
+			auto align_start = std::chrono::high_resolution_clock::now();
 			status = bface_alignment(m_stIRImg, bboxList[idx], &stIrLandmarks);
+			auto align_end = std::chrono::high_resolution_clock::now();
+			auto align_duration = std::chrono::duration_cast<std::chrono::milliseconds>(align_end - align_start);
+			
 			if (BFACE_SUCCESS != status)
 			{
+
 				pthread_mutex_unlock(&m_stCoreFacesLock);
 				return;
 			}
+			
+
              
 			float fIrLivenessConf = 0;
+			auto liveness_start = std::chrono::high_resolution_clock::now();
 			status = bface_liveness(m_stIRImg, stIrLandmarks, &fIrLivenessConf);
+			auto liveness_end = std::chrono::high_resolution_clock::now();
+			auto liveness_duration = std::chrono::duration_cast<std::chrono::milliseconds>(liveness_end - liveness_start);
+			
 			if (BFACE_SUCCESS != status)
 			{
+	
 				pthread_mutex_unlock(&m_stCoreFacesLock);
 				return;
 			}
         
-			if (fIrLivenessConf >= ReadConfig::GetInstance()->getIdentity_Manager_Living_value() || (fIrLivenessConf == 0 && stIrLandmarks.score >= fIrLivenessConf))
+
+		
+			if (fIrLivenessConf >= ReadConfig::GetInstance()->getIdentity_Manager_Living_value() || 
+				(fIrLivenessConf == 0 && stIrLandmarks.score >= fIrLivenessConf))
 			{
-                //mMatchCoreFace.attr_info.liveness_ir = 1;
-
                 float fRgbLivenessConf = 0;
+                auto rgb_liveness_start = std::chrono::high_resolution_clock::now();
                 status = bface_liveness(m_stRGBImg, stIrLandmarks, &fRgbLivenessConf);
+                auto rgb_liveness_end = std::chrono::high_resolution_clock::now();
+                auto rgb_liveness_duration = std::chrono::duration_cast<std::chrono::milliseconds>(rgb_liveness_end - rgb_liveness_start);
 
-                //printf(">>>%s,%s,%d,fIrLivenessConf=%4f,fRgbLivenessConf=%4f\n",__FILE__,__func__,__LINE__,fIrLivenessConf,fRgbLivenessConf);
 
-                if (fRgbLivenessConf >= ReadConfig::GetInstance()->getIdentity_Manager_Living_value() )
+
+                if (fRgbLivenessConf >= ReadConfig::GetInstance()->getIdentity_Manager_Living_value())
                 {
                     mMatchCoreFace.attr_info.liveness_ir = 1;
+ 
+                }
+                else
+                {
+         
                 }
 			}
+			else
+			{
 
-			//退出当前帧
+			}
+
 			pthread_mutex_unlock(&m_stCoreFacesLock);
 			return;
 		}
 		pthread_mutex_unlock(&m_stCoreFacesLock);
 	}    
     mMatchCoreFace.attr_info.liveness_ir = (ret == MOK) ? nLiveness : -1;
-
 }
 
 void BaiduFaceManagerPrivate::CheckDetectFace3DAngle(const int &nMatchCoreFaceIndex)
@@ -932,6 +1384,7 @@ float BaiduFaceManagerPrivate::CheckFaceQuality() //包含在 FaceFeatureExtract
    	pthread_mutex_lock(&m_stAiMutex);
 	if (m_bAiInitFinished == false)
 	{
+		
 		pthread_mutex_unlock(&m_stAiMutex);
 		return 0.0;
 	}
@@ -939,35 +1392,59 @@ float BaiduFaceManagerPrivate::CheckFaceQuality() //包含在 FaceFeatureExtract
 	{
 		BFACE_STATUS status;
 		std::vector<BoundingBox_t> bbox_list;
+		
+		
+		auto start_time = std::chrono::high_resolution_clock::now();
+		
 		status = bface_detect_face(m_stRGBImg, &bbox_list);
+		
+		auto end_time = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+		
 		if (status != BFACE_SUCCESS)
 		{
-			LogE("%s %s[%d] bface_detect_face failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
+			
 			pthread_mutex_unlock(&m_stAiMutex);
 			return 0;
 		}
+		
+		
+		
 		if (bbox_list.size() == 0)
 		{
-			LogE("%s %s[%d] No faces detected from input picture \n",__FILE__,__FUNCTION__,__LINE__);
+			
 			pthread_mutex_unlock(&m_stAiMutex);
 			return 0;
 		}
 
 	    bface::helper::MicrosecondTimer quality_timer;
+	    
+	    
+	    auto quality_start = std::chrono::high_resolution_clock::now();
+	    
 	    status = bface_quality_score(m_stRGBImg, bbox_list[0], &quality_score);
+	    
+	    auto quality_end = std::chrono::high_resolution_clock::now();
+	    auto quality_duration = std::chrono::duration_cast<std::chrono::milliseconds>(quality_end - quality_start);
+	    
 	    if (status != BFACE_SUCCESS)
 	    {
-	        LogE("%s %s[%d] bface_quality_score failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
+	    
 	        pthread_mutex_unlock(&m_stAiMutex);
 	        return 0;
 	    }
+	    
+	
 	}
-    if(quality_score > 0.5 && (mMatchCoreFace.attr_info.quality > mMatchCoreFace.catch_face_quality || mMatchCoreFace.catch_face_track_id != mMatchCoreFace.track_id))
+	
+	// Debug print for quality threshold check
+    if(quality_score > 0.5 && (mMatchCoreFace.attr_info.quality > mMatchCoreFace.catch_face_quality || 
+    	mMatchCoreFace.catch_face_track_id != mMatchCoreFace.track_id))
     {
+    	
+    	
     	 if(ReadConfig::GetInstance()->getRecords_Manager_FaceImg() == 1)
     	 {
-    	    	//抓一张图片质量比较好的人脸图
-   	    	//LogD("%s %s[%d]  FaceImgPath= %s \n",  __FILE__, __FUNCTION__, __LINE__, mMatchCoreFace.FaceImgPath);                
     	    	memset(mMatchCoreFace.FaceImgPath,0,sizeof(mMatchCoreFace.FaceImgPath));
     	    	std::string path = "/mnt/user/face_crop_image/"+ QDateTime::currentDateTime().toString("yyyy-MM-dd").toStdString()+"/";
     	    	if(access(path.c_str(),F_OK))
@@ -976,8 +1453,8 @@ float BaiduFaceManagerPrivate::CheckFaceQuality() //包含在 FaceFeatureExtract
     	    	}
     	    	path += QDateTime::currentDateTime().toString("yyyyMMddhhmmsszzz").toStdString()+"_"+std::to_string(mMatchCoreFace.track_id)+".jpg";
     	    	strncpy(mMatchCoreFace.FaceImgPath,path.c_str(),sizeof(mMatchCoreFace.FaceImgPath));
-    	    	LogD("%s %s[%d] %f %f FaceImgPath= %s \n", __FILE__, __FUNCTION__, __LINE__, mMatchCoreFace.attr_info.quality,mMatchCoreFace.catch_face_quality,
-    	    			mMatchCoreFace.FaceImgPath);
+    	    	
+    	
 
     	    	mMatchCoreFace.catch_face_quality = quality_score;
     	    	mMatchCoreFace.catch_face_track_id = mMatchCoreFace.track_id;
@@ -989,68 +1466,73 @@ float BaiduFaceManagerPrivate::CheckFaceQuality() //包含在 FaceFeatureExtract
 }
 
 void BaiduFaceManagerPrivate::FaceFeatureExtract()
-{ //提特征
-    Image_t img ;
-#if 0
-    unsigned char* pTmpBuf = (unsigned char*) YNH_LJX::RkUtils::Utils_Malloc(q_func()->mDeskWidth * q_func()->mDeskHeight * 3 / 2);
-
-    YNH_LJX::RkUtils::Utils_YVU420SPConvertToYUV420P((unsigned long)mMatchCoreFace.FaceOffscreen.ppu8Plane[0], (unsigned long) pTmpBuf, q_func()->mDeskWidth,q_func()->mDeskHeight);
-    {
-        YNH_LJX::RkUtils::YUVtoJPEG("/mnt/user/facedb/faceFeature.jpg", (unsigned char*) pTmpBuf, q_func()->mDeskWidth, q_func()->mDeskHeight);
-    }
-    YNH_LJX::RkUtils::Utils_Free(pTmpBuf);
-
-    cv::Mat img_mat = cv::imread("/mnt/user/facedb/faceFeature.jpg"); //faceFeature.jpg  RegImage
-
-    img.pixel_format = BFACE_INTERLEAVE_U8C3_BGR;
-    img.image_type = BFACE_IMAGE_RGB;
-
-    img.width = img_mat.cols;
-    img.height = img_mat.rows;
-    img.vir_addr[0] = (bface_pointer_type)img_mat.data;
-#endif     
-    img = m_stRGBImg;
+{
+   
+    Image_t img = m_stRGBImg;
+    
     /// 执行人脸检测
     std::vector<BoundingBox_t> bbox_list;
+    
     bface::BFACE_STATUS status = bface_detect_face(img, &bbox_list);
+    
     if (status != BFACE_SUCCESS) {
-        std::cerr << "bface_detect_face failed error : " << status << std::endl;
-        return ;
+        
+        return;
     }
     if (bbox_list.size() == 0) {
-        return ;
+       
+        return;
     }
 
     /// 提取人脸关键点
     Landmark_t landmarks;
+    
     status = bface_alignment(img, bbox_list[0], &landmarks);
+    
+    
     if (status != BFACE_SUCCESS) {
-        std::cerr << "bface_alignment failed error : " << status << std::endl;
+        
         return;
     }
 
-        /// 计算人脸得分
+    /// 计算人脸得分
     float quality_score = 0.f;
+    
     status = bface_quality_score(img, bbox_list[0], &quality_score);
+    
+    
     if (status != BFACE_SUCCESS) {
-        LogE("%s %s[%d] bface_quality_score failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
+        
         return;
     }
 
-    if (quality_score < ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold()) //FaceQualityThreshold
-     return ;
+    if (quality_score < ReadConfig::GetInstance()->getIdentity_Manager_FqThreshold()) {
+        
+        return;
+    }
    
-    /// 提取人脸特征
-   // bface::helper::MicrosecondTimer timer;
+    /// 提取人脸特征 - CRITICAL SECTION
     std::vector<Byte_t> feature;
+    
+    
+    // Set up a timeout mechanism here if needed
+    time_t start_time = time(NULL);
+    
+    // THIS IS WHERE IT LIKELY HANGS - if you don't see the "RETURNED" message, it hung here
     status = bface_extract_feature(img, landmarks, &feature);
-    //int timing = timer.end();
-    //std::cout << "bface_extract_feature cost : "<< timing << " us." << std::endl;
+    
+    time_t end_time = time(NULL);
+    long duration = end_time - start_time;
+    
+    
+    
+    
+    
     if (status != BFACE_SUCCESS) {
-        std::cerr << "bface_extract_feature failed error : " << status << std::endl;
+        
         return;
     }
-
+    
     if (mMatchCoreFace.nFaceFeatureSize < feature.size())
     {
         if (mMatchCoreFace.pFaceFeature != ISC_NULL)
@@ -1058,22 +1540,16 @@ void BaiduFaceManagerPrivate::FaceFeatureExtract()
             delete []mMatchCoreFace.pFaceFeature;
         }
         mMatchCoreFace.pFaceFeature = new unsigned char[feature.size()];
-        if(	mMatchCoreFace.pFaceFeature == ISC_NULL)
+        if(mMatchCoreFace.pFaceFeature == ISC_NULL)
         {            
+        
             return;
         }
     }
 
-
-    mMatchCoreFace.nFaceFeatureSize = feature.size();//faceFeature.featureSize;
+    mMatchCoreFace.nFaceFeatureSize = feature.size();
     memcpy(mMatchCoreFace.pFaceFeature, &feature[0], feature.size());
-#if 0
-    for (size_t i = 0; i < feature.size(); i++) {        
-        std::cout << "feature data [" << i << "] : " << int(feature[i]) << std::endl;        
-    }
-#endif   
-
-
+    
 }
 
 void BaiduFaceManagerPrivate::DealFaceMove(const int &FaceNum, CORE_FACE_S *new_update_face_info[])
@@ -1208,10 +1684,15 @@ CORE_FACE_S * BaiduFaceManager::getCoreFace(unsigned int nTrackID, unsigned int 
 	
 }
 
-void BaiduFaceManager::setCameraPreviewYUVData(int /*nPixelFormat*/, unsigned long nYuvVirAddr0, unsigned long /*nYuvPhyAddr0*/, int nWidth0, int nHeight0, int /*nSize0*/, int rotation0, unsigned long nYuvVirAddr1, unsigned long /*nYuvPhyAddr1*/, int nWidth1, int nHeight1, int /*nSize1*/, int rotation1)
+void BaiduFaceManager::setCameraPreviewYUVData(int nPixelFormat, unsigned long  nYuvVirAddr0, unsigned long  nYuvPhyAddr0, int nWidth0, int nHeight0, int nSize0, int rotation0,
+                                 unsigned long  nYuvVirAddr1, unsigned long  nYuvPhyAddr1, int nWidth1, int nHeight1, int nSize1, int rotation1)
 {
     Q_D(BaiduFaceManager);
-   	if((d->mInitEngineSuccess != 1))return;	
+        
+    static int frame_count = 0;
+    frame_count++;
+    
+    if((d->mInitEngineSuccess != 1)) return;
 #if 1     
 
     if(d->mRegFaceState) 
@@ -1349,7 +1830,7 @@ void BaiduFaceManager::setCameraPreviewYUVData(int /*nPixelFormat*/, unsigned lo
 	}
 #endif 
 
-	//TODO STEP 2 可见光检测人脸信息，初步得出人脸数量/人脸质量
+
 	{
 		bface::BFACE_STATUS status = bface::bface_detect_and_track(d->m_stRGBImg, &stTrackedFaceList);
         
@@ -1511,9 +1992,22 @@ void BaiduFaceManager::setCameraPreviewYUVData(int /*nPixelFormat*/, unsigned lo
 
         }
         
-        if (tfacelist.size()>0)
-          emit sigDrawFaceRect(tfacelist); //QList<CORE_FACE_RECT_S> //liwen
-    }    
+if (tfacelist.size() > 0) {
+    LogD("%s %s[%d] === DEBUG FLOW === [%s] BaiduFaceManager passing %d rectangles to CameraManager\n",
+         __FILE__, __FUNCTION__, __LINE__, 
+         QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz").toStdString().c_str(),
+         tfacelist.size());
+    
+    for (int i = 0; i < tfacelist.size(); i++) {
+        LogD("%s %s[%d] === DEBUG FLOW === [%s] Rectangle %d: color=0x%06x, pos=(%d,%d), size=(%dx%d)\n",
+             __FILE__, __FUNCTION__, __LINE__,
+             QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz").toStdString().c_str(),
+             i, tfacelist[i].nColor, tfacelist[i].nX, tfacelist[i].nY, 
+             tfacelist[i].nWidth, tfacelist[i].nHeight);
+    }
+    
+    emit sigDrawFaceRect(tfacelist);
+} 
 
    //口罩
     d->CheckMaskDetecct();
@@ -1525,7 +2019,21 @@ void BaiduFaceManager::setCameraPreviewYUVData(int /*nPixelFormat*/, unsigned lo
     //提取特征码
     d->FaceFeatureExtract();	
     //printf(">>>>%s,%s,%d,FaceImgPath=%s\n",__FILE__,__func__,__LINE__,d->mMatchCoreFace.FaceImgPath);  
+    LogD("%s %s[%d] === DEBUG FLOW === [%s] BaiduFaceManager passing face data to IdentityManagement: track_id=%d, quality=%f, liveness=%d\n",
+     __FILE__, __FUNCTION__, __LINE__,
+     QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz").toStdString().c_str(),
+     d->mMatchCoreFace.track_id, d->mMatchCoreFace.attr_info.quality, d->mMatchCoreFace.attr_info.liveness_ir);
+
     if(!d->mRegFaceState) emit sigMatchCoreFace(d->mMatchCoreFace);
+
+        LogD("%s %s[%d] FINAL FACE ATTRIBUTES - Track ID: %d, Quality: %f, Liveness: %d, Mask: %d, Pose Pitch: %f\n",
+    	__FILE__, __FUNCTION__, __LINE__, 
+    	d->mMatchCoreFace.track_id,
+    	d->mMatchCoreFace.attr_info.quality,
+    	d->mMatchCoreFace.attr_info.liveness_ir,
+    	d->mMatchCoreFace.attr_info.face_mask,
+    	d->mMatchCoreFace.attr_info.pose_pitch);
+}
 
 }
 
@@ -1549,18 +2057,17 @@ int BaiduFaceManager::RegistPerson(const QString &path, int &faceNum, double &th
 
     if(access(path.toStdString().c_str(),F_OK))
     {
-    	LogE("%s %s[%d] %s not exit \n",__FILE__,__FUNCTION__,__LINE__,path.toStdString().c_str());
-    	return -1;
+
+        return -1;
     }
 
-    //注册,如果jpeg 不是 0xFF 0xD9 则 在 文件末添加上
-#if 1
-printf("%s %s[%d] path=%s  \n",__FILE__,__FUNCTION__,__LINE__,path.toStdString().c_str());    
+    // File validation and fixing code...
+    printf("%s %s[%d] path=%s  \n",__FILE__,__FUNCTION__,__LINE__,path.toStdString().c_str());    
     char buf[3];  
-    FILE *fp = fopen(path.toStdString().c_str(),"ab");//w+
+    FILE *fp = fopen(path.toStdString().c_str(),"ab");
     fseek(fp, -2, SEEK_END);
     fread(buf, 2,1,fp );
- printf("%s %s[%d] buf[0]=%2x, buf[1]=%2x, \n",__FILE__,__FUNCTION__,__LINE__,buf[0] ,buf[1] );            
+    printf("%s %s[%d] buf[0]=%2x, buf[1]=%2x, \n",__FILE__,__FUNCTION__,__LINE__,buf[0] ,buf[1] );            
     if (buf[0]==0xFF && buf[1]==0xD9)
     {}
     else 
@@ -1568,78 +2075,119 @@ printf("%s %s[%d] path=%s  \n",__FILE__,__FUNCTION__,__LINE__,path.toStdString()
         char wbuf[3-1];
         wbuf[0]=0xFF;
         wbuf[1]=0xD9;
-        //wbuf[2]='\0';
         fseek(fp, 0, SEEK_END);
         fwrite(wbuf,2,1, fp);
+        
     }
     fclose(fp);
-#endif 
+
     cv::Mat img_mat = cv::imread(path.toStdString());
+    
+    if (img_mat.empty()) {
+        
+        return -1;
+    }
+
+    
 
     img2.pixel_format = BFACE_INTERLEAVE_U8C3_BGR;
     img2.image_type = BFACE_IMAGE_RGB;
     img2.width = img_mat.cols;
     img2.height = img_mat.rows;
     img2.vir_addr[0] = (bface_pointer_type)img_mat.data;
+    
     /// 执行人脸检测
     std::vector<BoundingBox_t> bbox_list;
+    
+    
+    auto detect_start = std::chrono::high_resolution_clock::now();
+    
     bface::BFACE_STATUS status = bface_detect_face(img2, &bbox_list);
+    
+    auto detect_end = std::chrono::high_resolution_clock::now();
+    auto detect_duration = std::chrono::duration_cast<std::chrono::milliseconds>(detect_end - detect_start);
+    
     if (status != BFACE_SUCCESS) {
-        LogE("%s %s[%d] bface_detect_face failed error  : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
-        //return -1;
+        
         return -2;
     }
+    
+    
+        
     if (bbox_list.size() == 0) {
-    	 LogE("%s %s[%d] bface_detect_face no face \n",__FILE__,__FUNCTION__,__LINE__);
-        //return -1;
+        
         return -3;
     }
 
     faceNum = bbox_list.size();
-    LogD("%s %s[%d] faceNum %d  \n",__FILE__,__FUNCTION__,__LINE__,faceNum);
-
-
-    if (faceNum>2)
+   
+    if (faceNum > 2)
     {
-        LogE("%s %s[%d] more than 2 ,faceNum=%d : %d \n",__FILE__,__FUNCTION__,__LINE__,faceNum);
+        
         return -7;    
     }
+    
     /// 提取人脸关键点
     Landmark_t landmarks;
+    
+   
+    auto align_start = std::chrono::high_resolution_clock::now();
+    
     status = bface_alignment(img2, bbox_list[0], &landmarks);
+    
+    auto align_end = std::chrono::high_resolution_clock::now();
+    auto align_duration = std::chrono::duration_cast<std::chrono::milliseconds>(align_end - align_start);
+    
     if (status != BFACE_SUCCESS) {
-        LogE("%s %s[%d] bface_alignment failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
-        //return -1;
+        
         return -4;
     }
+    
+    
 
     Pose_t face_pose;
     int luminance_value = 0;
+    
     /// 计算人脸得分
     float quality_score = 0.f;
+    
+   
     bface::helper::MicrosecondTimer quality_timer;
+    auto quality_start = std::chrono::high_resolution_clock::now();
+    
     status = bface_quality_score(img2, bbox_list[0], &quality_score);
+    
+    auto quality_end = std::chrono::high_resolution_clock::now();
+    auto quality_duration = std::chrono::duration_cast<std::chrono::milliseconds>(quality_end - quality_start);
+    
     if (status != BFACE_SUCCESS) {
-        LogE("%s %s[%d] bface_quality_score failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
-        //return -1;
+        
         return -5;
     }
+    
     threshold = quality_score;
-    LogD("%s %s[%d] face quality  %f  \n",__FILE__,__FUNCTION__,__LINE__,threshold);
 
-    /// 提取人脸特征
+
     bface::helper::MicrosecondTimer timer;
     std::vector<Byte_t> feature;
+    
+    auto extract_start = std::chrono::high_resolution_clock::now();
     status = bface_extract_feature(img2, landmarks, &feature);
+    auto extract_end = std::chrono::high_resolution_clock::now();
+    auto extract_duration = std::chrono::duration_cast<std::chrono::milliseconds>(extract_end - extract_start);
+    
     int timing = timer.end();
-    //std::cout << "bface_extract_feature cost : "<< timing << " us." << std::endl;
+    
     if (status != BFACE_SUCCESS) {
-        LogE("%s %s[%d] bface_extract_feature failed error : %d \n",__FILE__,__FUNCTION__,__LINE__,status);
-        //return -1;
+    
         return -6;
     }
 
+   
+
     Data = QByteArray(reinterpret_cast<const char*>(feature.data()), feature.size());
+    
+    
     return 0;
 }
 
@@ -1719,20 +2267,43 @@ double BaiduFaceManager::getFaceFeatureCompare(unsigned char *FaceFeature1, cons
 double BaiduFaceManager::getFaceFeatureCompare_baidu(unsigned char *FaceFeature1, const int &FaceFeatureSize1, unsigned char *FaceFeature2, const int &FaceFeatureSize2)
 {
     Q_D(BaiduFaceManager);
-    double similar = 0;
+    
+    static int recognition_count = 0;
+    recognition_count++;
+    
+   
 
-    int ret =-1;
+    double similar = 0;
+    int ret = -1;
     float score = 0.f;
     bface::StoreType cmp_type = RGB_FEATURE;
 
-   if (FaceFeatureSize1>0  && FaceFeatureSize2>0)
-   {
+    if (FaceFeatureSize1 > 0 && FaceFeatureSize2 > 0)
+    {
+        time_t start_time = time(NULL);
         
-      bface::BFACE_STATUS status = bface_compare_features(std::vector<unsigned char>(FaceFeature1, FaceFeature1 + FaceFeatureSize1), 
-         std::vector<unsigned char>(FaceFeature2, FaceFeature2 + FaceFeatureSize2), &score, cmp_type);  
+        // THIS MIGHT ALSO HANG
+        bface::BFACE_STATUS status = bface_compare_features(
+            std::vector<unsigned char>(FaceFeature1, FaceFeature1 + FaceFeatureSize1), 
+            std::vector<unsigned char>(FaceFeature2, FaceFeature2 + FaceFeatureSize2), 
+            &score, cmp_type);
+        
+        time_t end_time = time(NULL);
+        long duration = end_time - start_time;
+            
+        
+        
 
-      if (bface::BFACE_SUCCESS == status)return score;
-   }
+        if (bface::BFACE_SUCCESS == status) {
+            return score;
+        } else {
+        
+        }
+    } else {
+        
+    }
+    
+
     return 0.0;
 }
 
@@ -1834,4 +2405,46 @@ double BaiduFaceManager::getPersonIdCardCompare(const QString &idCardPath)
 bool BaiduFaceManager::algoActive(const QString activeKey)
 {
 	return false;
+}
+
+void BaiduFaceManager::setIdentifyState(const bool &state, const QString &name, const int &personId, const QString &uuid, const QString &idcard)
+{
+    Q_D(BaiduFaceManager);
+
+    LogD("%s %s[%d] === SET IDENTIFY STATE === State: %s, Name: %s, IDCard: %s\n",
+         __FILE__, __FUNCTION__, __LINE__,
+         state ? "TRUE" : "FALSE", name.toStdString().c_str(), idcard.toStdString().c_str());
+
+    // Set the state flag
+    if (state != d->mIdentifyState)
+        d->mIdentifyState = state;
+
+    // ✅ Only emit if recognized and idcard is valid
+    if (state && !name.isEmpty() && !idcard.isEmpty()) {
+
+        // ✅ Use idcard instead of personId for uniqueness and rate-limit check
+        static QTime lastEmissionTime = QTime::currentTime();
+        static QString lastEmittedIdCard;
+
+        bool isSamePerson = (idcard == lastEmittedIdCard);
+        int timeSinceLastEmission = lastEmissionTime.msecsTo(QTime::currentTime());
+
+        if (isSamePerson && timeSinceLastEmission < 1500) {
+            LogD("%s %s[%d] === RATE LIMITED === Same person (IDCard:%s), only %d ms passed, need 1500ms\n",
+                 __FILE__, __FUNCTION__, __LINE__,
+                 idcard.toStdString().c_str(), timeSinceLastEmission);
+            return; // Skip re-emission for same ID card
+        }
+
+        LogD("%s %s[%d] === FAST PATH === Emitting person: %s, IDCard: %s, UUID: %s\n",
+             __FILE__, __FUNCTION__, __LINE__,
+             name.toStdString().c_str(), idcard.toStdString().c_str(), uuid.toStdString().c_str());
+
+        // 🔔 Emit recognized signal
+        emit sigRecognizedPerson(name, personId, uuid, idcard);
+
+        // ✅ Update tracking variables
+        lastEmissionTime = QTime::currentTime();
+        lastEmittedIdCard = idcard;
+    }
 }

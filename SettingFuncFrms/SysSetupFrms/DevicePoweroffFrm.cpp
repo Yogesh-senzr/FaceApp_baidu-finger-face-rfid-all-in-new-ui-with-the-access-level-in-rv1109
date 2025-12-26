@@ -3,7 +3,9 @@
 
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
+#include <QFrame>
 
 class DevicePoweroffFrmPrivate
 {
@@ -14,11 +16,19 @@ private:
     void InitUI();
     void InitData();
     void InitConnect();
+    void ApplyCardStyles();
 private:
-    //QPushButton *m_pShutdownBtn;//关机
-    QPushButton *m_pRebootBtn;//重启
-    QPushButton *m_pCancelBtn;//取消
+    // Header
+    QWidget *m_pHeaderWidget;
+    QLabel *m_pTitleLabel;
+    
+    // Content
+    QFrame *m_pContentCard;
     QLabel *m_pHintLabel;
+    
+    // Action buttons
+    QPushButton *m_pRebootBtn;
+    QPushButton *m_pCancelBtn;
 private:
     DevicePoweroffFrm *const q_ptr;
 };
@@ -29,71 +39,196 @@ DevicePoweroffFrmPrivate::DevicePoweroffFrmPrivate(DevicePoweroffFrm *dd)
     this->InitUI();
     this->InitData();
     this->InitConnect();
+    this->ApplyCardStyles();
 }
 
 DevicePoweroffFrm::DevicePoweroffFrm(QWidget *parent)
     : QDialog(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
     , d_ptr(new DevicePoweroffFrmPrivate(this))
 {
-
 }
 
 DevicePoweroffFrm::~DevicePoweroffFrm()
 {
-
 }
 
 void DevicePoweroffFrmPrivate::InitUI()
 {
-    //m_pShutdownBtn = new QPushButton(QObject::tr("PowerOff"));//关机
-    m_pRebootBtn = new QPushButton(QObject::tr("Reboot"));//重启
-    m_pCancelBtn = new QPushButton(QObject::tr("Cancel"));//取消
+    q_func()->setObjectName("DevicePoweroffFrm");
+    q_func()->setFixedSize(500, 350); // INCREASED SIZE: from 400x250 to 500x350
+    
+    // Main layout
+    QVBoxLayout *mainLayout = new QVBoxLayout(q_func());
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+    
+    // Header section - INCREASED HEIGHT
+    m_pHeaderWidget = new QWidget;
+    m_pHeaderWidget->setObjectName("PoweroffHeader");
+    m_pHeaderWidget->setFixedHeight(90); // Increased from 70 to 90
+    
+    QHBoxLayout *headerLayout = new QHBoxLayout(m_pHeaderWidget);
+    headerLayout->setContentsMargins(20, 0, 20, 0);
+    
+    m_pTitleLabel = new QLabel(QObject::tr("Device Reboot"));
+    m_pTitleLabel->setObjectName("PoweroffTitle");
+    m_pTitleLabel->setAlignment(Qt::AlignCenter);
+    
+    headerLayout->addWidget(m_pTitleLabel);
+    
+    // Content section
+    QWidget *contentWidget = new QWidget;
+    QVBoxLayout *contentLayout = new QVBoxLayout(contentWidget);
+    contentLayout->setContentsMargins(30, 30, 30, 30); // Increased margins
+    contentLayout->setSpacing(25); // Increased spacing
+    
+    // Content card
+    m_pContentCard = new QFrame;
+    m_pContentCard->setObjectName("PoweroffContentCard");
+    
+    QVBoxLayout *cardLayout = new QVBoxLayout(m_pContentCard);
+    cardLayout->setContentsMargins(30, 30, 30, 30); // Increased padding
+    cardLayout->setSpacing(20); // Increased spacing
+    cardLayout->setAlignment(Qt::AlignCenter);
+    
+    // Reboot icon - LARGER ICON
+    QLabel *rebootIcon = new QLabel("↻");
+    rebootIcon->setObjectName("RebootIcon");
+    rebootIcon->setAlignment(Qt::AlignCenter);
+    
+    QLabel *messageLabel = new QLabel(QObject::tr("Device will restart. Continue?"));
+    messageLabel->setObjectName("PoweroffMessage");
+    messageLabel->setAlignment(Qt::AlignCenter);
+    messageLabel->setWordWrap(true);
+    
     m_pHintLabel = new QLabel;
+    m_pHintLabel->setObjectName("PoweroffHintLabel");
+    m_pHintLabel->setAlignment(Qt::AlignCenter);
+    m_pHintLabel->hide();
+    
+    cardLayout->addWidget(rebootIcon);
+    cardLayout->addWidget(messageLabel);
+    cardLayout->addWidget(m_pHintLabel);
+    
+    // Action buttons
+    QWidget *actionsWidget = new QWidget;
+    QHBoxLayout *actionsLayout = new QHBoxLayout(actionsWidget);
+    actionsLayout->setContentsMargins(0, 30, 0, 0); // Increased top margin
+    actionsLayout->setSpacing(20); // Increased spacing
+    
+    m_pRebootBtn = new QPushButton(QObject::tr("Reboot"));
+    m_pRebootBtn->setObjectName("PoweroffRebootButton");
+    m_pRebootBtn->setMinimumSize(120, 50); // Larger button
+    
+    m_pCancelBtn = new QPushButton(QObject::tr("Cancel"));
+    m_pCancelBtn->setObjectName("PoweroffCancelButton");
+    m_pCancelBtn->setMinimumSize(120, 50); // Larger button
+    
+    actionsLayout->addStretch();
+    actionsLayout->addWidget(m_pCancelBtn);
+    actionsLayout->addWidget(m_pRebootBtn);
+    actionsLayout->addStretch();
+    
+    contentLayout->addStretch();
+    contentLayout->addWidget(m_pContentCard);
+    contentLayout->addWidget(actionsWidget);
+    contentLayout->addStretch();
+    
+    // Assemble main layout
+    mainLayout->addWidget(m_pHeaderWidget);
+    mainLayout->addWidget(contentWidget, 1);
+}
 
-    QHBoxLayout *hlayout = new QHBoxLayout;
-    //hlayout->addWidget(m_pShutdownBtn);
-    hlayout->addWidget(m_pRebootBtn);
-    hlayout->addWidget(m_pCancelBtn);
-
-    QVBoxLayout *vlayout = new QVBoxLayout(q_func());
-    vlayout->setMargin(10);
-    vlayout->addStretch();
-    vlayout->addLayout(hlayout);
-    vlayout->addWidget(m_pHintLabel);
-    vlayout->addStretch();
+void DevicePoweroffFrmPrivate::ApplyCardStyles()
+{
+    q_func()->setStyleSheet(
+        "QDialog#DevicePoweroffFrm {"
+        "    background: white;"
+        "    border-radius: 18px;" // Slightly larger radius
+        "}"
+        
+               // Header styles
+"QWidget#PoweroffHeader {"
+"    background: #ff9800;"  // Solid color instead of gradient
+"    border-top-left-radius: 18px;" // Match main radius
+"    border-top-right-radius: 18px;" // Match main radius
+"}"
+        "QLabel#PoweroffTitle {"
+        "    color: white;"
+        "    font-size: 24px;" // Larger font
+        "    font-weight: 600;"
+        "}"
+        
+        // Content card styles
+        "QFrame#PoweroffContentCard {"
+        "    background: #f8f9fa;"
+        "    border: 2px solid #e1e5e9;"
+        "    border-radius: 15px;" // Larger radius
+        "}"
+        
+        "QLabel#RebootIcon {"
+        "    font-size: 64px;" // Larger icon: from 48px to 64px
+        "    color: #ff9800;"
+        "}"
+        "QLabel#PoweroffMessage {"
+        "    font-size: 18px;" // Larger font: from 16px to 18px
+        "    font-weight: 500;"
+        "    color: #2c3e50;"
+        "}"
+        "QLabel#PoweroffHintLabel {"
+        "    font-size: 16px;" // Larger font: from 14px to 16px
+        "    color: #28a745;"
+        "    font-weight: 600;"
+        "}"
+        
+        // Button styles - LARGER BUTTONS
+        "QPushButton#PoweroffRebootButton {"
+        "    background: #ff9800;"
+        "    color: white;"
+        "    border: none;"
+        "    padding: 15px 30px;" // Increased padding
+        "    border-radius: 10px;" // Larger radius
+        "    font-size: 18px;" // Larger font
+        "    font-weight: 600;"
+        "    min-width: 120px;" // Wider button
+        "}"
+        "QPushButton#PoweroffRebootButton:hover {"
+        "    background: #f57c00;"
+        "}"
+        "QPushButton#PoweroffCancelButton {"
+        "    background: #6c757d;"
+        "    color: white;"
+        "    border: none;"
+        "    padding: 15px 30px;" // Increased padding
+        "    border-radius: 10px;" // Larger radius
+        "    font-size: 18px;" // Larger font
+        "    font-weight: 600;"
+        "    min-width: 120px;" // Wider button
+        "}"
+        "QPushButton#PoweroffCancelButton:hover {"
+        "    background: #545b62;"
+        "}"
+    );
 }
 
 void DevicePoweroffFrmPrivate::InitData()
 {
-    q_func()->setObjectName("DevicePoweroffFrm");
-
-    m_pHintLabel->setObjectName("DevicePoweroffFrmLabel");
-    m_pHintLabel->hide();
-
-    //m_pShutdownBtn->setObjectName("DevicePoweroffButton");
-    m_pRebootBtn->setObjectName("DevicePoweroffButton");
-    m_pCancelBtn->setObjectName("DevicePoweroffButton");
+    // No additional initialization needed
 }
 
 void DevicePoweroffFrmPrivate::InitConnect()
 {
-#if 0    
-    QObject::connect(m_pShutdownBtn, &QPushButton::clicked, [&] {
+    QObject::connect(m_pRebootBtn, &QPushButton::clicked, [this] {
         m_pHintLabel->show();
-        m_pHintLabel->setText(QObject::tr("PowerOffing"));//关机中...
-        myHelper::Utils_Poweroff();
-    });
-#endif     
-    QObject::connect(m_pRebootBtn, &QPushButton::clicked, [&] {
-        m_pHintLabel->show();
-        m_pHintLabel->setText(QObject::tr("Rebooting"));//重启中...
+        m_pHintLabel->setText(QObject::tr("Rebooting"));
         myHelper::Utils_Reboot();
     });
-    QObject::connect(m_pCancelBtn, &QPushButton::clicked, [&] {
+    QObject::connect(m_pCancelBtn, &QPushButton::clicked, [this] {
        q_func()->done(0);
     });
 }
-#ifdef SCREENCAPTURE  //ScreenCapture 
+
+#ifdef SCREENCAPTURE
 void DevicePoweroffFrm::mouseDoubleClickEvent(QMouseEvent* event)
 {
     grab().save(QString("/mnt/user/screenshot/%1.png").arg(this->metaObject()->className()),"png");    

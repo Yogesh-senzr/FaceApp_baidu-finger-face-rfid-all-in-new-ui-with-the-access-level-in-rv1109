@@ -45,12 +45,14 @@ class IdentityCardManage;
 class IdentityCard_ZK_Manage;
 class HealthCodeManage;
 class RecordsExport;
+class PostPersonRecordThread;
 class ParsePersonXlsx;
 class IdentityManagement;
 class SensorManager;
 //class ArcsoftFaceManager;
 class BaseFaceManager;
 class CameraManager;
+class FingerprintManager;
 class FaceMainFrm;
 class FaceAppPrivate;
 class FaceApp : public QApplication
@@ -74,10 +76,12 @@ public:
     static IdentityManagement *GetIdentityManagement();
     static ParsePersonXlsx *GetParsePersonXlsx();
     static RecordsExport *GetRecordsExport();
+    static PostPersonRecordThread *GetPostPersonRecordThread();
     static powerManagerThread *GetPowerManagerThread();
     static HealthCodeManage *GetHealthCodeManage();
     static IdentityCardManage *GetIdentityCardManage();
     static IdentityCard_ZK_Manage *GetIdentityCard_ZK_Manage();
+    static FingerprintManager *GetFingerprintManager();
 private:
     Q_SIGNAL void ready();
 private:

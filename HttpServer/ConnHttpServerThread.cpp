@@ -12,11 +12,15 @@
 #include "PCIcore/Utils_Door.h"
 #include "DB/RegisteredFacesDB.h"
 #include "ManageEngines/PersonRecordToDB.h"
+#include "ManageEngines/IdentityManagement.h"
 #include "RKCamera/Camera/cameramanager.h"
 #include "base64.hpp"
 #include "BaiduFace/BaiduFaceManager.h"
 #include "RkNetWork/NetworkControlThread.h"
 #include "json-cpp/json.h"
+#include "FaceMainFrm.h"
+#include "FaceHomeFrms/FaceHomeFrm.h"
+#include "FaceHomeFrms/FaceHomeBottomFrm.h"
 
 #include "PCIcore/GPIO.h"
 
@@ -40,7 +44,14 @@
 #include <dbserver.h>
 #include <QtCore/QTextStream>
 #include <QtCore/QDir>
+#include <QUuid>
 #include <QtCore/QFileInfoList>
+#include <QtSql/QSqlQuery>
+#include <QtSql/QSqlDatabase>
+#include <QtSql/QSqlError>
+#include <QtConcurrent/QtConcurrent>
+#include <QFuture>
+#include <QFutureWatcher>
 
 
 
@@ -53,6 +64,8 @@
 #define MERR_ASF_FACEENGINE_FACEEXTRACT						(MERR_ASF_FACEENGINE_BASE + 4)
 #define MERR_ASF_FACEENGINE_THUMBNAIL						(MERR_ASF_FACEENGINE_BASE + 5)
 #define MERR_ASF_FACEENGINE_FACEQUALITY						(MERR_ASF_FACEENGINE_BASE + 6)
+#define DEFAULT_DOOR_ID "28(TM-10, B-0, BT-10, S-0, P-0)"
+#define DEFAULT_ACCESS_LEVEL "2"
 
 typedef struct _MESSAGE_HEADER_S
 {
@@ -76,9 +89,17 @@ public:
 private:
 	QString mac;
 	QString msg;
-	mutable QMutex sync;
+	mutable QMutex sync; 
+	mutable QMutex syncMutex;           // Mutex for sync operations
+    bool syncInProgress;                // Flag to track sync status
 	QWaitCondition pauseCond;
 	int threadDelay;
+	float m_heartbeatLivenessThreshold;
+    float m_heartbeatQualityThreshold;
+    float m_heartbeatComparisonThreshold;
+	int m_heartbeatIdentificationInterval;
+	int m_heartbeatRecognitionDistance;
+    bool m_hasHeartbeatThresholds;
 
 private:
 	QString doPostJson(Json::Value json);
@@ -113,7 +134,11 @@ private:
 	void doSetDeviceHttpPassword(Json::Value root, MESSAGE_HEADER_S httpMsgHeader);
 	void doSyncPersonsList(Json::Value root, MESSAGE_HEADER_S httpMsgHeader);
 	void doSaveFile(Json::Value root, MESSAGE_HEADER_S httpMsgHeader);
-
+    QDateTime convertLocalTimeToUTC(const QDateTime& localTime);
+    QDateTime getLocalLastModifiedTimeUTC();
+	    // ADD THIS LINE - Declaration for the new method
+    QDateTime convertServerUTCToIST(const QString& utcTimeStr);
+	
 private:
 	ConnHttpServerThread * const q_ptr;
 };
@@ -274,9 +299,9 @@ static size_t download_write_data(void *ptr, size_t size, size_t nmemb, void* us
 
 static int write_data(void *buffer, size_t sz, size_t nmemb, void *ResInfo)
 {
-	std::string* psResponse = (std::string*) ResInfo; //强制转换
-	psResponse->append((char*) buffer, sz * nmemb); //sz*nmemb表示接受数据的多少
-	return sz * nmemb;  //返回接受数据的多少
+	std::string* psResponse = (std::string*) ResInfo; //å¼ºåˆ¶è½¬æ¢
+	psResponse->append((char*) buffer, sz * nmemb); //sz*nmembè¡¨ç¤ºæŽ¥å—æ•°æ®çš„å¤šå°‘
+	return sz * nmemb;  //è¿”å›žæŽ¥å—æ•°æ®çš„å¤šå°‘
 }
 
 static char *mypem = ISC_NULL;
@@ -363,7 +388,7 @@ bool ConnHttpServerThreadPrivate::doDownloadFile(QString url, QString dist)
 			curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 			curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3);
 			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, download_write_data); //数据请求到以后的回调函数
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, download_write_data); //æ•°æ®è¯·æ±‚åˆ°ä»¥åŽçš„å›žè°ƒå‡½æ•°
 			curl_easy_setopt(curl, CURLOPT_WRITEDATA, fd);
 			if (mHttpServerUrl.startsWith("https://"))
 			{
@@ -383,7 +408,7 @@ bool ConnHttpServerThreadPrivate::doDownloadFile(QString url, QString dist)
 			curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 			curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3);
 			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, download_write_data); //数据请求到以后的回调函数
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, download_write_data); //æ•°æ®è¯·æ±‚åˆ°ä»¥åŽçš„å›žè°ƒå‡½æ•°
 			curl_easy_setopt(curl, CURLOPT_WRITEDATA, fd);
 			curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
 			curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
@@ -466,7 +491,13 @@ bool ConnHttpServerThreadPrivate::doDownloadFile(QString url, QString dist)
 
 ConnHttpServerThreadPrivate::ConnHttpServerThreadPrivate(ConnHttpServerThread *dd) :
 		q_ptr(dd), //
-		threadDelay(30) //
+		threadDelay(60),
+		m_heartbeatLivenessThreshold(0.0f),     // No defaults
+        m_heartbeatQualityThreshold(0.0f),      // No defaults
+        m_heartbeatComparisonThreshold(0.0f),   // No defaults
+		m_heartbeatIdentificationInterval(0),    // Initialize to 0
+        m_heartbeatRecognitionDistance(0),         // Initialize to 0
+        m_hasHeartbeatThresholds(false)      // Initially false
 {
 	QFile file("/param/mac.txt");
 	if (file.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -479,6 +510,12 @@ ConnHttpServerThreadPrivate::ConnHttpServerThreadPrivate(ConnHttpServerThread *d
 
 QString ConnHttpServerThreadPrivate::doPostJson(Json::Value json)
 {
+    qDebug() << "doPostJson called from thread:" << QThread::currentThread();
+    qDebug() << "Main thread is:" << QCoreApplication::instance()->thread();
+    
+    if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
+        qDebug() << "WARNING: Network call in MAIN/UI thread - will cause freeze!";
+    }
 	std::string jsonStr = "";
 	std::string resultString = "";
 	qDebug() << "POST_JSON_DEBUG: Starting doPostJson function";
@@ -513,7 +550,7 @@ QString ConnHttpServerThreadPrivate::doPostJson(Json::Value json)
 		headers = curl_slist_append(headers, "Content-Type: application/json;charset=utf-8");
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data); //数据请求到以后的回调函数
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data); //æ•°æ®è¯·æ±‚åˆ°ä»¥åŽçš„å›žè°ƒå‡½æ•°
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resultString);
 		if (mHttpServerUrl.startsWith("https://"))
 		{
@@ -598,7 +635,7 @@ QString ConnHttpServerThreadPrivate::doPostJson(Json::Value json)
 		headers = curl_slist_append(headers, "Content-Type: application/json;charset=utf-8");
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr.c_str());
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data); //数据请求到以后的回调函数
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data); //æ•°æ®è¯·æ±‚åˆ°ä»¥åŽçš„å›žè°ƒå‡½æ•°
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resultString);
 		if (mHttpServerUrl.startsWith("https://"))
 		{
@@ -632,53 +669,228 @@ QString ConnHttpServerThreadPrivate::doPostJson(Json::Value json)
 
 void ConnHttpServerThreadPrivate::doHeartbeat()
 {
-	Json::Value config;
-	std::string timestamp;
-	std::string password;
+    Json::Value config;
+    std::string timestamp;
+    std::string password;
 
-	if (sn.size() < 2)
-	{
-		return;
-	}
-	timestamp = getTime();
-	password = mHttpServerPassword.toStdString() + timestamp;
-	password = md5sum(password);
-	password = md5sum(password);
-	transform(password.begin(), password.end(), password.begin(), ::tolower);
+    if (sn.size() < 2)
+    {
+        return;
+    }
+    timestamp = getTime();
+    password = mHttpServerPassword.toStdString() + timestamp;
+    password = md5sum(password);
+    password = md5sum(password);
+    transform(password.begin(), password.end(), password.begin(), ::tolower);
 
-	config["msg_type"] = "heartbeat";
-	config["sn"] = sn.toStdString().c_str();
-	config["timestamp"] = timestamp.c_str();
-	config["password"] = password.c_str();
-	config["device_version"] = ISC_VERSION;
-	if (((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getAlgoFaceInitState() == true)
-	{
-		config["active_info"] = "actived";
-	}
+    config["msg_type"] = "heartbeat";
+    config["sn"] = sn.toStdString().c_str();
+    config["timestamp"] = timestamp.c_str();
+    config["password"] = password.c_str();
+    config["device_version"] = ISC_VERSION;
+    if (((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getAlgoFaceInitState() == true)
+    {
+        config["active_info"] = "actived";
+    }
 
-	config["device_name"] = ReadConfig::GetInstance()->getHomeDisplay_DeviceName().toStdString().c_str();
-	config["algo_name"] = "";
+    config["device_name"] = ReadConfig::GetInstance()->getHomeDisplay_DeviceName().toStdString().c_str();
+    config["algo_name"] = "";
 
-	if (((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getAlgoFaceInitState() != true)
-	{
-		if (!access("/param/deviceinfo.txt", F_OK))
-		{
-			config["arcsoft_face_device_info"] = fileToBase64String("/param/deviceinfo.txt");
+    if (((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getAlgoFaceInitState() != true)
+    {
+        if (!access("/param/deviceinfo.txt", F_OK))
+        {
+            config["arcsoft_face_device_info"] = fileToBase64String("/param/deviceinfo.txt");
 
-			if (mac.size() > 2)
-			{
-				config["arcsoft_face_mac"] = mac.toStdString().c_str();
-			}
-		}
-	}
-	
+            if (mac.size() > 2)
+            {
+                config["arcsoft_face_mac"] = mac.toStdString().c_str();
+            }
+        }
+    }
+    
+    // === NEW DEBUG: Log heartbeat request ===
+    qDebug() << "HEARTBEAT_DEBUG: Sending heartbeat request to server...";
+    qDebug() << "HEARTBEAT_DEBUG: Target URL: " << mHttpServerUrl;
+    qDebug() << "HEARTBEAT_DEBUG: Device SN: " << sn;
+    
     QString ret = doPostJson(config);
 
-    if (ret.size() > 0)
-    {
+    if (ret.size() > 0) {
         msg = ret;
-        q_ptr->setLastHeartbeatResponse(ret); 
-		q_ptr->checkAndSyncUsers(ret);
+        q_ptr->setLastHeartbeatResponse(ret);
+        
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (reader.parse(ret.toStdString(), responseJson)) {
+            
+            // === Extract doorId from heartbeat response ===
+            QString doorId = DEFAULT_DOOR_ID; // Default hardcoded value
+            
+            // Check for doorsIds array (note the plural form from your JSON)
+            if (responseJson.isMember("doorsIds") && responseJson["doorsIds"].isArray()) {
+                Json::Value doorsArray = responseJson["doorsIds"];
+                if (doorsArray.size() > 0 && doorsArray[0].isString()) {
+                    doorId = QString::fromStdString(doorsArray[0].asString());
+                    qDebug() << "DEBUG: doHeartbeat - Found doorId from server doorsIds array:" << doorId;
+                } else {
+                    qDebug() << "DEBUG: doHeartbeat - doorsIds array empty, using default:" << doorId;
+                }
+            }
+            // Fallback: check for single doorId field
+            else if (responseJson.isMember("doorId") && !responseJson["doorId"].isNull()) {
+                doorId = QString::fromStdString(responseJson["doorId"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found doorId from server:" << doorId;
+            } else {
+                qDebug() << "DEBUG: doHeartbeat - No doorId in response, using default:" << doorId;
+            }
+            
+            // Store doorId in ReadConfig
+            ReadConfig::GetInstance()->setHeartbeat_DoorId(doorId);
+            qDebug() << "DEBUG: doHeartbeat - Stored doorId:" << doorId;
+            // Extract threshold values from heartbeat response
+            m_hasHeartbeatThresholds = false;
+            
+            if (responseJson.isMember("liveness_threshold") && !responseJson["liveness_threshold"].isNull()) {
+                m_heartbeatLivenessThreshold = responseJson["liveness_threshold"].asFloat();
+                qDebug() << "DEBUG: Found liveness_threshold:" << m_heartbeatLivenessThreshold;
+                m_hasHeartbeatThresholds = true;
+            }
+            
+            if (responseJson.isMember("quality_threshold") && !responseJson["quality_threshold"].isNull()) {
+                m_heartbeatQualityThreshold = responseJson["quality_threshold"].asFloat();
+                qDebug() << "DEBUG: Found quality_threshold:" << m_heartbeatQualityThreshold;
+                m_hasHeartbeatThresholds = true;
+            }
+            
+            if (responseJson.isMember("comparison_threshold") && !responseJson["comparison_threshold"].isNull()) {
+                m_heartbeatComparisonThreshold = responseJson["comparison_threshold"].asFloat();
+                qDebug() << "DEBUG: Found comparison_threshold:" << m_heartbeatComparisonThreshold;
+                m_hasHeartbeatThresholds = true;
+            }
+            
+            // Extract identification_interval from heartbeat response
+           if (responseJson.isMember("identificationInterval") && !responseJson["identificationInterval"].isNull()) {
+           m_heartbeatIdentificationInterval = responseJson["identificationInterval"].asInt();
+           qDebug() << "DEBUG: Found identificationInterval:" << m_heartbeatIdentificationInterval;
+           m_hasHeartbeatThresholds = true;
+}
+
+           // Extract recognition_distance from heartbeat response  
+           if (responseJson.isMember("identificationDistance") && !responseJson["identificationDistance"].isNull()) {
+           m_heartbeatRecognitionDistance = responseJson["identificationDistance"].asInt();
+           qDebug() << "DEBUG: Found identificationDistance:" << m_heartbeatRecognitionDistance;
+           m_hasHeartbeatThresholds = true;
+}
+            
+            // Extract tenant name
+            if (responseJson.isMember("tenantName") && !responseJson["tenantName"].isNull()) {
+                QString tenantName = QString::fromStdString(responseJson["tenantName"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found tenant name:" << tenantName;
+                q_ptr->updateTenantName(tenantName);
+            }
+            
+            if (responseJson.isMember("tenantId") && !responseJson["tenantId"].isNull()) {
+                QString tenantId = QString::fromStdString(responseJson["tenantId"].asString());
+                // Store in existing ReadConfig system
+                ReadConfig::GetInstance()->setHeartbeat_TenantId(tenantId);
+                qDebug() << "DEBUG: Extracted tenantId from heartbeat:" << tenantId;
+            }
+            
+            // Extract attendanceMode  
+            if (responseJson.isMember("attendanceMode") && !responseJson["attendanceMode"].isNull()) {
+                QString attendanceMode = QString::fromStdString(responseJson["attendanceMode"].asString());
+                ReadConfig::GetInstance()->setHeartbeat_AttendanceMode(attendanceMode);
+                qDebug() << "DEBUG: Extracted attendanceMode from heartbeat:" << attendanceMode;
+            }
+            
+            // Extract Device status (from your image)
+            if (responseJson.isMember("Device_status") && !responseJson["Device_status"].isNull()) {
+                QString deviceStatus = QString::fromStdString(responseJson["Device_status"].asString());
+                ReadConfig::GetInstance()->setHeartbeat_DeviceStatus(deviceStatus);
+                qDebug() << "DEBUG: Extracted Device_status from heartbeat:" << deviceStatus;
+            }
+
+            // === MODIFIED: STORE SERVER'S LAST MODIFIED TIME FROM date_updated FIELD ===
+            QString serverLastModifiedStr = "";
+            
+            if (responseJson.isMember("date_updated") && !responseJson["date_updated"].isNull()) {
+                serverLastModifiedStr = QString::fromStdString(responseJson["date_updated"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found server date_updated:" << serverLastModifiedStr;
+            }
+            else if (responseJson.isMember("dateUpdated") && !responseJson["dateUpdated"].isNull()) {
+                serverLastModifiedStr = QString::fromStdString(responseJson["dateUpdated"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found server dateUpdated:" << serverLastModifiedStr;
+            }
+            else if (responseJson.isMember("lastModified") && !responseJson["lastModified"].isNull()) {
+                serverLastModifiedStr = QString::fromStdString(responseJson["lastModified"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found server lastModified:" << serverLastModifiedStr;
+            }
+            else if (responseJson.isMember("lastUpdatedAt") && !responseJson["lastUpdatedAt"].isNull()) {
+                serverLastModifiedStr = QString::fromStdString(responseJson["lastUpdatedAt"].asString());
+                qDebug() << "DEBUG: doHeartbeat - Found server lastUpdatedAt:" << serverLastModifiedStr;
+            }
+            
+            // If we found server's lastModified time, store it using existing file-based approach
+    if (!serverLastModifiedStr.isEmpty()) {
+        qDebug() << "DEBUG: doHeartbeat - Processing server date_updated time:" << serverLastModifiedStr;
+        
+        // Convert server UTC time to IST using existing function
+        QDateTime serverTimeIST = convertServerUTCToIST(serverLastModifiedStr);
+        
+        if (serverTimeIST.isValid()) {
+            qDebug() << "SUCCESS: doHeartbeat - Server date_updated time converted to IST:" << serverTimeIST.toString("yyyy-MM-dd hh:mm:ss");
+            
+            // *** Store server date_updated time in a simple file ***
+            QString serverTimeFormatted = serverTimeIST.toString("yyyy/MM/dd HH:mm:ss");
+            
+            // *** CHANGED: Replace directory creation and file write with debug message ***
+            QString serverTimeFile = "/mnt/user/sync_data/server_lastmodified.txt";
+            qDebug() << "SYNC_DATA_DEBUG: Would write to file:" << serverTimeFile;
+            qDebug() << "SYNC_DATA_DEBUG: Content would be:" << serverTimeFormatted;
+            qDebug() << "SYNC_DATA_DEBUG: SOURCE=SERVER_DATE_UPDATED";
+            qDebug() << "SYNC_DATA_DEBUG: TIMESTAMP=" << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+            qDebug() << "SUCCESS: doHeartbeat - Server date_updated time processed (debug only, no file created)";
+            
+        } else {
+            qDebug() << "ERROR: doHeartbeat - Failed to convert server date_updated time to IST";
+        }
+    } else {
+        qDebug() << "DEBUG: doHeartbeat - No server date_updated time found in response";
+    }
+            
+            // FIXED: Use singleton instance instead of local instance
+            bool syncEnabled = ReadConfig::GetInstance()->getSyncEnabled();
+            qDebug() << "DEBUG: doHeartbeat - Sync enabled from singleton:" << syncEnabled;
+            
+            if (syncEnabled) {
+                qDebug() << "DEBUG: doHeartbeat - Sync is enabled, proceeding with sync";
+                
+                // Extract server count for initial display
+                int serverCount = 0;
+                if (responseJson.isMember("TotalUserCount")) {
+                    serverCount = atoi(responseJson["TotalUserCount"].asString().c_str());
+                }
+                
+                QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+                int localCount = localUsers.size();
+                
+                // Show initial status
+                q_ptr->updateSyncDisplay("Checking", localCount, serverCount);
+                q_ptr->updateLocalFaceCount();
+                
+                // Only call sync if enabled
+                q_ptr->checkAndSyncUsers(ret);
+            } else {
+                qDebug() << "DEBUG: doHeartbeat - Sync is disabled, skipping sync";
+                
+                // Still update local count and show disabled status
+                QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+                int localCount = localUsers.size();
+                q_ptr->updateSyncDisplay("Disabled", localCount, 0);
+                q_ptr->updateLocalFaceCount();
+            }
+        }
     }
 }
 
@@ -697,11 +909,25 @@ void ConnHttpServerThreadPrivate::doAddPerson(Json::Value root, MESSAGE_HEADER_S
 	QString time_data = QString::fromStdString(root["data"].asString());
 	QString time_range = QString::fromStdString(root["time_range"].asString());
 
+	LogD("%s %s[%d] === doAddPerson START === Person: %s, ID: %s\n", 
+		__FILE__, __FUNCTION__, __LINE__, person_name.toStdString().c_str(), id_card_no.toStdString().c_str());
+
 	mkdir("/mnt/user/tmp/", 0777);
-	if (doDownloadFile(face_img, "/mnt/user/facedb/RegImage.jpeg"))
+	
+	// Ensure face image directory exists using mkdir
+	mkdir("/mnt/user/reg_face_image/", 0777);
+	
+	// Use employee ID as filename for face image storage
+	QString faceImagePath = QString("/mnt/user/reg_face_image/%1.jpg").arg(id_card_no);
+	
+	if (doDownloadFile(face_img, faceImagePath))
 	{
+		LogD("%s %s[%d] Face image downloaded successfully: %s\n", 
+			__FILE__, __FUNCTION__, __LINE__, faceImagePath.toStdString().c_str());
+			
 		if (person_uuid.length() <= 0 && person_name.length() <= 0)
 		{
+			LogE("%s %s[%d] Invalid person data - UUID or name empty\n", __FILE__, __FUNCTION__, __LINE__);
 			return;
 		}
 
@@ -723,18 +949,45 @@ void ConnHttpServerThreadPrivate::doAddPerson(Json::Value root, MESSAGE_HEADER_S
 		json["result"] = "0";
 		json["success"] = "0";
 
+		// Extract face embedding from the downloaded image
+		QByteArray faceEmbedding;
+		bool embeddingExtracted = false;
+		
+		LogD("%s %s[%d] Extracting face embedding from downloaded image...\n", __FILE__, __FUNCTION__, __LINE__);
+		
 		int result = -1;
 		int faceNum = 0;
 		double threshold = 0;
-		QByteArray faceFeature;
-		result = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson("/mnt/user/facedb/RegImage.jpeg", faceNum, threshold, faceFeature);
-		LogD("%s %s[%d] RegistPerson result %d \n", __FILE__, __FUNCTION__, __LINE__, result);
-		LogD("%s %s[%d] auth_type %s \n", __FILE__, __FUNCTION__, __LINE__, auth_type.toStdString().c_str());
-		LogD("%s %s[%d] time_data %s \n", __FILE__, __FUNCTION__, __LINE__, time_data.toStdString().c_str());
-		LogD("%s %s[%d] time_range %s \n", __FILE__, __FUNCTION__, __LINE__, time_range.toStdString().c_str());
+		
+		result = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson(
+			faceImagePath, 
+			faceNum, 
+			threshold, 
+			faceEmbedding
+		);
+		
+		if (result == 0 && !faceEmbedding.isEmpty()) {
+			embeddingExtracted = true;
+			LogD("%s %s[%d] Face embedding extracted successfully: %d bytes\n", 
+				__FILE__, __FUNCTION__, __LINE__, faceEmbedding.size());
+		} else {
+			LogE("%s %s[%d] Failed to extract face embedding, result: %d\n", 
+				__FILE__, __FUNCTION__, __LINE__, result);
+		}
 
-		if (result == 0)
-		{
+		// Read face image data for storage
+		QFile imageFile(faceImagePath);
+		QByteArray faceImageData;
+		bool serverSuccess = false;
+		
+		if (imageFile.open(QIODevice::ReadOnly)) {
+			faceImageData = imageFile.readAll();
+			imageFile.close();
+			
+			LogD("%s %s[%d] Read face image data: %d bytes\n", __FILE__, __FUNCTION__, __LINE__, 
+				faceImageData.size());
+			
+			// Prepare time of access
 			QString timeOfAccess = "";
 			if (auth_type == "time_range")
 			{
@@ -766,56 +1019,112 @@ void ConnHttpServerThreadPrivate::doAddPerson(Json::Value root, MESSAGE_HEADER_S
 					}
 				}
 			}
-
-			bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(person_uuid, person_name, id_card_no, card_no, male,
-					group, timeOfAccess, faceFeature);
-			LogD("%s %s[%d] RegPersonToDBAndRAM isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
-
-			result = isSaveDBOk ? ISC_OK : ISC_ERROR;
+			
+			LogD("%s %s[%d] Calling sendUserToServer with image data...\n", __FILE__, __FUNCTION__, __LINE__);
+			
+			// Call sendUserToServer with face image data
+			serverSuccess = q_ptr->sendUserToServer(id_card_no, person_name, id_card_no, 
+				card_no, male, group, timeOfAccess, faceImageData);
+			
+			LogD("%s %s[%d] sendUserToServer result: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+				serverSuccess ? "SUCCESS" : "FAILED");
+		} else {
+			LogE("%s %s[%d] Failed to read face image file: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+				faceImagePath.toStdString().c_str());
 		}
 
-		if (result == ISC_OK)
+		if (serverSuccess)
 		{
-			json["result"] = "1";
-			json["success"] = "1";
-			json["message"] = "person register success!";
-		} else if (result == MERR_ASF_FACEENGINE_FACEDETECT)
+			LogD("%s %s[%d] Server upload successful, saving to local database...\n", __FILE__, __FUNCTION__, __LINE__);
+			
+			// Prepare time of access string (duplicate code for clarity)
+			QString timeOfAccess = "";
+			if (auth_type == "time_range")
+			{
+				timeOfAccess = time_range;
+			} else if (auth_type == "week_cycle")
+			{
+				time_range.replace(QString(";"), QString(","));
+				timeOfAccess = time_range;
+
+				QStringList sections = time_data.split(",");
+				for (int i = 1; i <= 7; i++)
+				{
+					bool isSet = false;
+					timeOfAccess += ",";
+					for (int j = 0; j < sections.size(); j++)
+					{
+						if (sections.at(j) == QString::number(i))
+						{
+							timeOfAccess += "1";
+							isSet = true;
+							break;
+						}
+					}
+					if (isSet == false)
+					{
+						timeOfAccess += "0";
+					}
+				}
+			}
+
+			// Store user locally with ONLY face embedding in DB, image already saved to directory
+			bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(
+				person_uuid, 
+				person_name, 
+				id_card_no, 
+				card_no, 
+				male, 
+				group, 
+				timeOfAccess, 
+				faceEmbedding,     // ONLY face embedding stored in DB, image is in directory
+                QByteArray(),
+				"",
+				"",
+				"",
+				"",
+				"",
+				0,
+				0
+			);
+			
+			LogD("%s %s[%d] RegPersonToDBAndRAM result: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+				isSaveDBOk ? "SUCCESS" : "FAILED");
+
+			if (isSaveDBOk)
+			{
+				json["result"] = "1";
+				json["success"] = "1";
+				json["message"] = "person register success with server!";
+				LogD("%s %s[%d] === doAddPerson SUCCESS ===\n", __FILE__, __FUNCTION__, __LINE__);
+			}
+			else
+			{
+				json["result"] = "-6";
+				json["success"] = "0";
+				json["message"] = "database save failed after server upload";
+				LogE("%s %s[%d] Database save failed after server upload\n", __FILE__, __FUNCTION__, __LINE__);
+			}
+		}
+		else
 		{
-			json["result"] = "-1";
+			json["result"] = "-7";
 			json["success"] = "0";
-			json["message"] = "picture do not have face";
-		} else if (result == MERR_ASF_FACEENGINE_MULTIFACE)
-		{
-			json["result"] = "-2";
-			json["success"] = "0";
-			json["message"] = "picture have many face";
-		} else if (result == MERR_ASF_FACEENGINE_FACEEXTRACT)
-		{
-			json["result"] = "-3";
-			json["success"] = "0";
-			json["message"] = "extract the feature failed!";
-		} else if (result == ISC_ERROR_EXIST)
-		{
-			json["result"] = "-4";
-			json["success"] = "0";
-			json["message"] = "person already register";
-		} else if (result == MERR_ASF_FACEENGINE_FACEQUALITY)
-		{
-			json["result"] = "-5";
-			json["success"] = "0";
-			json["message"] = "the picture is too low or the image is too bright or blurry";
-		} else
-		{
-			json["result"] = "-6";
-			json["success"] = "0";
-			json["message"] = "register failed, unknown error, please try again";
+			json["message"] = "server upload failed";
+			LogE("%s %s[%d] === doAddPerson FAILED - Server upload failed ===\n", __FILE__, __FUNCTION__, __LINE__);
 		}
 
 		QString ret = doPostJson(json);
 		if (ret.length() > 0)
 		{
 			msg = ret;
+			LogD("%s %s[%d] Response sent: %s\n", __FILE__, __FUNCTION__, __LINE__, ret.toStdString().c_str());
 		}
+	}
+	else
+	{
+		LogE("%s %s[%d] Failed to download face image from: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+			face_img.toStdString().c_str());
 	}
 }
 
@@ -906,7 +1215,7 @@ void ConnHttpServerThreadPrivate::doAddPersons(Json::Value root, MESSAGE_HEADER_
 					}
 
 					bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(person_uuid, person_name, id_card_no, card_no,
-							male, group, timeOfAccess, faceFeature);
+							male, group, timeOfAccess, faceFeature, QByteArray(), "", "", "", "", "", 0, 0);
 					LogD("%s %s[%d] RegPersonToDBAndRAM isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
 
 					if (isSaveDBOk)
@@ -952,7 +1261,7 @@ void ConnHttpServerThreadPrivate::doAddPersons(Json::Value root, MESSAGE_HEADER_
 }
 
 #if 0
- uuid,必填,否则不知对应哪一记录
+ uuid,å¿…å¡«,å¦åˆ™ä¸çŸ¥å¯¹åº”å“ªä¸€è®°å½•
 #endif 
 
 void ConnHttpServerThreadPrivate::doAddPersonswithreason(Json::Value root, MESSAGE_HEADER_S stMsgHeader)
@@ -1049,53 +1358,53 @@ void ConnHttpServerThreadPrivate::doAddPersonswithreason(Json::Value root, MESSA
 					}
 
 					bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(person_uuid, person_name, id_card_no, card_no,
-							male, group, timeOfAccess, faceFeature);
+							male, group, timeOfAccess, faceFeature,QByteArray(), "", "", "", "", "", 0, 0);
 					LogD("%s %s[%d] RegPersonToDBAndRAM isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
 
 					if (isSaveDBOk)
 					{
 						okUUID += person_uuid+ ",";
 					}
-				} else //注册失败
+				} else //æ³¨å†Œå¤±è´¥
 				{
 
-					//"fail_uuid":"1,2,3,4,", //注册成功之后返回的PID 字符串类型
-					//"failresult": "1", //成功标志 或 注明失败的原因, 如果ID值，请附一张对应的出错原因表。
-					failReason="person_uuid,或 person_name 为空";
+					//"fail_uuid":"1,2,3,4,", //æ³¨å†ŒæˆåŠŸä¹‹åŽè¿”å›žçš„PID å­—ç¬¦ä¸²ç±»åž‹
+					//"failresult": "1", //æˆåŠŸæ ‡å¿— æˆ– æ³¨æ˜Žå¤±è´¥çš„åŽŸå› , å¦‚æžœIDå€¼ï¼Œè¯·é™„ä¸€å¼ å¯¹åº”çš„å‡ºé”™åŽŸå› è¡¨ã€‚
+					failReason="person_uuid,æˆ– person_name ä¸ºç©º";
 					switch (result)
 					{
 						case -1:
 							failReason ="path (/mnt/user/facedb/RegImage.jpeg) not exit " ;
 						case -2:
-							failReason ="bface_detect_face failed error (检测人脸失败,照片质量较低)" ;
+							failReason ="bface_detect_face failed error (æ£€æµ‹äººè„¸å¤±è´¥,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 						case -3:
-							failReason ="bface_detect_face no face(无人脸数据,照片质量较低)" ;
+							failReason ="bface_detect_face no face(æ— äººè„¸æ•°æ®,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 						case -4:
-							failReason ="bface_alignment failed error (提取人脸关键点失败,照片质量较低)" ;
+							failReason ="bface_alignment failed error (æå–äººè„¸å…³é”®ç‚¹å¤±è´¥,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 						case -5:
-							failReason ="bface_quality_score failed error (计算人脸得分较低,照片质量较低)" ;
+							failReason ="bface_quality_score failed error (è®¡ç®—äººè„¸å¾—åˆ†è¾ƒä½Ž,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 						case -6:		
-							failReason ="bface_extract_feature failed error (提取人脸特征失败, 照片质量较低)" ;		
+							failReason ="bface_extract_feature failed error (æå–äººè„¸ç‰¹å¾å¤±è´¥, ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;		
 						case -7:		
-							failReason ="人脸数>2" ;																
+							failReason ="äººè„¸æ•°>2" ;																
 						default:
-						   failReason ="错误!";
+						   failReason ="é”™è¯¯!";
 					}
 					//failUUID = person_uuid+ ",";
 				}
 				person_uuid="";
 			} else //if (person_uuid.length() > 0 && person_name.length() > 0)
 			{
-				//failresult  person_uuid,或 person_name 为空
-				failReason="person_uuid,或 person_name 为空";
+				//failresult  person_uuid,æˆ– person_name ä¸ºç©º
+				failReason="person_uuid,æˆ– person_name ä¸ºç©º";
 				//failUUID = person_uuid+ ",";
 			}
 		} else //doDownloadFile(face_img, "/mnt/user/facedb/RegImage.jpeg") 
 		{
-			failReason="下载 /mnt/user/facedb/RegImage.jpeg 失败";
+			failReason="ä¸‹è½½ /mnt/user/facedb/RegImage.jpeg å¤±è´¥";
 			//failUUID = person_uuid+ ",";
 			//fail_uuid
-			//failresult  不能下载 /mnt/user/facedb/RegImage.jpeg
+			//failresult  ä¸èƒ½ä¸‹è½½ /mnt/user/facedb/RegImage.jpeg
 			//doDownloadFile(face_img, "/mnt/user/facedb/RegImage.jpeg") 
 		}
 		if (result<0) 
@@ -1138,7 +1447,7 @@ void ConnHttpServerThreadPrivate::doAddPersonswithreason(Json::Value root, MESSA
 	//	json["fail_uuid"] = failUUID.toStdString().c_str();
 	//}
 
-	//失败原因
+	//å¤±è´¥åŽŸå› 
 	json["faildata"] = faildata;
 
 	QString ret = doPostJson(json);
@@ -1242,9 +1551,44 @@ void ConnHttpServerThreadPrivate::doDeleteAllPerson(Json::Value root, MESSAGE_HE
 	}
 }
 
+float ConnHttpServerThread::getHeartbeatLivenessThreshold() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_heartbeatLivenessThreshold;
+}
+
+float ConnHttpServerThread::getHeartbeatQualityThreshold() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_heartbeatQualityThreshold;
+}
+
+float ConnHttpServerThread::getHeartbeatComparisonThreshold() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_heartbeatComparisonThreshold;
+}
+
+int ConnHttpServerThread::getHeartbeatIdentificationInterval() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_heartbeatIdentificationInterval;
+}
+
+int ConnHttpServerThread::getHeartbeatRecognitionDistance() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_heartbeatRecognitionDistance;
+}
+
+bool ConnHttpServerThread::hasHeartbeatThresholds() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->m_hasHeartbeatThresholds;
+}
+
 void ConnHttpServerThreadPrivate::doUpdatePerson(Json::Value root, MESSAGE_HEADER_S stMsgHeader)
 {
-
 	QString person_uuid = QString::fromStdString(root["person_uuid"].asString());
 	QString card_no = QString::fromStdString(root["card_no"].asString());
 	QString id_card_no = QString::fromStdString(root["id_card_no"].asString());
@@ -1257,13 +1601,34 @@ void ConnHttpServerThreadPrivate::doUpdatePerson(Json::Value root, MESSAGE_HEADE
 	QString time_data = QString::fromStdString(root["data"].asString());
 	QString time_range = QString::fromStdString(root["time_range"].asString());
 	QString person_image = "";
+	
+	LogD("%s %s[%d] === doUpdatePerson START === Person: %s, ID: %s\n", 
+		__FILE__, __FUNCTION__, __LINE__, person_name.toStdString().c_str(), id_card_no.toStdString().c_str());
+	
 	mkdir("/mnt/user/tmp/", 0777);
+	mkdir("/mnt/user/reg_face_image/", 0777);
+	
 	if (person_uuid.length() > 0 && person_name.length() > 0)
 	{
-		unlink("/mnt/user/facedb/RegImage.jpeg");
-		if (doDownloadFile(face_img, "/mnt/user/facedb/RegImage.jpeg"))
+		QString faceImagePath = QString("/mnt/user/reg_face_image/%1.jpeg").arg(id_card_no);
+		bool hasNewImage = false;
+		bool serverSuccess = true; // Default to true if no new image
+		
+		// Remove old image file first
+		unlink(faceImagePath.toStdString().c_str());
+		LogD("%s %s[%d] Removed old image file: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+			faceImagePath.toStdString().c_str());
+		
+		if (doDownloadFile(face_img, faceImagePath))
 		{
-			person_image = "/mnt/user/facedb/RegImage.jpeg";
+			person_image = faceImagePath;
+			hasNewImage = true;
+			LogD("%s %s[%d] New face image downloaded: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+				person_image.toStdString().c_str());
+		}
+		else
+		{
+			LogD("%s %s[%d] No new face image to download\n", __FILE__, __FUNCTION__, __LINE__);
 		}
 
 		Json::Value json;
@@ -1284,78 +1649,116 @@ void ConnHttpServerThreadPrivate::doUpdatePerson(Json::Value root, MESSAGE_HEADE
 		json["result"] = "0";
 		json["success"] = "0";
 
-		int result = -1;
-		QString timeOfAccess = "";
+		int result = ISC_OK;
+		QString userTimeOfAccess = "";
 		if (auth_type == "time_range")
 		{
-			timeOfAccess = time_range;
+			userTimeOfAccess = time_range;
 		} else if (auth_type == "week_cycle")
 		{
 			//data = 1,2,3,4,5,6,7
 			//time_range = 00:00;21:00
 			time_range.replace(QString(";"), QString(","));
-			timeOfAccess = time_range;
+			userTimeOfAccess = time_range;
 
 			QStringList sections = time_data.split(",");
 			for (int i = 1; i <= 7; i++)
 			{
 				bool isSet = false;
-				timeOfAccess += ",";
+				userTimeOfAccess += ",";
 				for (int j = 0; j < sections.size(); j++)
 				{
 					if (sections.at(j) == QString::number(i))
 					{
-						timeOfAccess += "1";
+						userTimeOfAccess += "1";
 						isSet = true;
 						break;
 					}
 				}
 				if (isSet == false)
 				{
-					timeOfAccess += "0";
+					userTimeOfAccess += "0";
 				}
 			}
 		}
-		result = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, person_name, id_card_no, card_no, male, group,
-				timeOfAccess, person_image);
-		LogD("%s %s[%d] UpdatePersonToDBAndRAM result %d \n", __FILE__, __FUNCTION__, __LINE__, result);
+
+		// FIXED: If there's a new image, call sendUserToServer with base64 data
+		if (hasNewImage)
+		{
+			QFile imageFile(person_image);
+			QByteArray faceImageData;
+			QByteArray base64FaceImageData;
+			
+			if (imageFile.open(QIODevice::ReadOnly)) {
+				faceImageData = imageFile.readAll();
+				imageFile.close();
+				
+				LogD("%s %s[%d] Read face image data for update: %d bytes\n", __FILE__, __FUNCTION__, __LINE__, 
+					faceImageData.size());
+				
+				// *** CRITICAL FIX: Convert to base64 to match sendUserToServer expectation ***
+				base64FaceImageData = faceImageData.toBase64();
+				
+				LogD("%s %s[%d] Converted to base64 for update: %d bytes (original: %d bytes)\n", 
+					__FILE__, __FUNCTION__, __LINE__, base64FaceImageData.size(), faceImageData.size());
+				
+				LogD("%s %s[%d] Calling sendUserToServer for update with base64 data...\n", __FILE__, __FUNCTION__, __LINE__);
+				
+				// Call sendUserToServer with BASE64 encoded face image data
+				serverSuccess = q_ptr->sendUserToServer(id_card_no, person_name, id_card_no, 
+					card_no, male, group, userTimeOfAccess, base64FaceImageData);
+				
+				LogD("%s %s[%d] sendUserToServer update result: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+					serverSuccess ? "SUCCESS" : "FAILED");
+			} else {
+				LogE("%s %s[%d] Failed to read face image file: %s\n", __FILE__, __FUNCTION__, __LINE__, 
+					person_image.toStdString().c_str());
+				serverSuccess = false;
+			}
+			
+			if (!serverSuccess)
+			{
+				result = -7; // Server upload failed
+				LogE("%s %s[%d] Server upload failed for update\n", __FILE__, __FUNCTION__, __LINE__);
+			}
+		}
+		else
+		{
+			LogD("%s %s[%d] No new image, skipping server upload\n", __FILE__, __FUNCTION__, __LINE__);
+		}
+
+		if (result == ISC_OK)
+		{
+			LogD("%s %s[%d] Updating person in local database...\n", __FILE__, __FUNCTION__, __LINE__);
+			
+			// Update person without face feature since server handles it
+			result = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, 
+				person_name, id_card_no, card_no, male, group, userTimeOfAccess, "", QByteArray(), "", "", "", "", "", 0);
+		}
+		
+		LogD("%s %s[%d] UpdatePersonToDBAndRAM result: %d\n", __FILE__, __FUNCTION__, __LINE__, result);
 
 		usleep(500 * 1000);
 		if (result == ISC_OK)
 		{
 			json["result"] = "1";
 			json["success"] = "1";
-			json["message"] = "person register success!";
-		} else if (result == MERR_ASF_FACEENGINE_FACEDETECT)
+			json["message"] = "person update success with server!";
+			LogD("%s %s[%d] === doUpdatePerson SUCCESS ===\n", __FILE__, __FUNCTION__, __LINE__);
+		} 
+		else if (result == -7)
 		{
-			json["result"] = "-1";
+			json["result"] = "-7";
 			json["success"] = "0";
-			json["message"] = "picture do not have face";
-		} else if (result == MERR_ASF_FACEENGINE_MULTIFACE)
-		{
-			json["result"] = "-2";
-			json["success"] = "0";
-			json["message"] = "picture have many face";
-		} else if (result == MERR_ASF_FACEENGINE_FACEEXTRACT)
-		{
-			json["result"] = "-3";
-			json["success"] = "0";
-			json["message"] = "extract the feature failed!";
-		} else if (result == ISC_ERROR_EXIST)
-		{
-			json["result"] = "-4";
-			json["success"] = "0";
-			json["message"] = "person already register";
-		} else if (result == MERR_ASF_FACEENGINE_FACEQUALITY)
-		{
-			json["result"] = "-5";
-			json["success"] = "0";
-			json["message"] = "the picture is too low or the image is too bright or blurry";
-		} else
+			json["message"] = "server upload failed";
+			LogE("%s %s[%d] === doUpdatePerson FAILED - Server upload failed ===\n", __FILE__, __FUNCTION__, __LINE__);
+		}
+		else
 		{
 			json["result"] = "-6";
 			json["success"] = "0";
-			json["message"] = "register failed, unknown error, please try again";
+			json["message"] = "update failed, unknown error";
+			LogE("%s %s[%d] === doUpdatePerson FAILED - Unknown error ===\n", __FILE__, __FUNCTION__, __LINE__);
 		}
 
 		QString ret = doPostJson(json);
@@ -1363,7 +1766,12 @@ void ConnHttpServerThreadPrivate::doUpdatePerson(Json::Value root, MESSAGE_HEADE
 		if (ret.length() > 0)
 		{
 			msg = ret;
+			LogD("%s %s[%d] Update response sent: %s\n", __FILE__, __FUNCTION__, __LINE__, ret.toStdString().c_str());
 		}
+	}
+	else
+	{
+		LogE("%s %s[%d] Invalid person data - UUID or name empty\n", __FILE__, __FUNCTION__, __LINE__);
 	}
 }
 
@@ -1562,7 +1970,7 @@ void ConnHttpServerThreadPrivate::doSetTimeOfAccess(Json::Value root, MESSAGE_HE
 	LogV("%s %s[%d] timeOfAccess %s\n", __FILE__, __FUNCTION__, __LINE__, timeOfAccess.toStdString().c_str());
 	if (timeOfAccess.size() > 3)
 	{
-		isOk = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, "", "", "", "", "", timeOfAccess, "");
+		isOk = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, "", "", "", "", "", timeOfAccess, "", QByteArray(), "", "", "", "", "", 0);
 	}
 
 	Json::Value json;
@@ -1589,27 +1997,27 @@ void ConnHttpServerThreadPrivate::doSetTimeOfAccess(Json::Value root, MESSAGE_HE
 		switch (isOk)
 		{
 		  case  -1 : 
-				json["result"] = "-1; uuid 为空";
+				json["result"] = "-1; uuid ä¸ºç©º";
 		  case  -5 : //ISC_UPDATE_PERSON_NOT_EXIST
-		        json["result"] = "-5; ISC_UPDATE_PERSON_NOT_EXIST PERSON 不存在";  
+		        json["result"] = "-5; ISC_UPDATE_PERSON_NOT_EXIST PERSON ä¸å­˜åœ¨";  
 		  case -6:
-		  		json["result"] = "-6; ISC_UPDATE_PERSON_DB_ERROR 更新数据库出错"; 			
+		  		json["result"] = "-6; ISC_UPDATE_PERSON_DB_ERROR æ›´æ–°æ•°æ®åº“å‡ºé”™"; 			
 			case -11:
 				json["result"] ="-11; path (/mnt/user/facedb/RegImage.jpeg) not exit " ;
 			case -12:
-				json["result"] ="-12;bface_detect_face failed error (检测人脸失败,照片质量较低)" ;
+				json["result"] ="-12;bface_detect_face failed error (æ£€æµ‹äººè„¸å¤±è´¥,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 			case -13:
-				json["result"] ="-13;bface_detect_face no face(无人脸数据,照片质量较低)" ;
+				json["result"] ="-13;bface_detect_face no face(æ— äººè„¸æ•°æ®,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 			case -14:
-				json["result"] ="-14;bface_alignment failed error (提取人脸关键点失败,照片质量较低)" ;
+				json["result"] ="-14;bface_alignment failed error (æå–äººè„¸å…³é”®ç‚¹å¤±è´¥,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 			case -15:
-				json["result"] ="-15;bface_quality_score failed error (计算人脸得分较低,照片质量较低)" ;
+				json["result"] ="-15;bface_quality_score failed error (è®¡ç®—äººè„¸å¾—åˆ†è¾ƒä½Ž,ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;
 			case -16:		
-				json["result"] ="-16;bface_extract_feature failed error (提取人脸特征失败, 照片质量较低)" ;		
+				json["result"] ="-16;bface_extract_feature failed error (æå–äººè„¸ç‰¹å¾å¤±è´¥, ç…§ç‰‡è´¨é‡è¾ƒä½Ž)" ;		
 			case -17:		
-				json["result"] ="-17;人脸数>2" ;																
+				json["result"] ="-17;äººè„¸æ•°>2" ;																
 			default:
-				json["result"] ="错误!";
+				json["result"] ="é”™è¯¯!";
 		}		  
 
 		json["success"] = "0";
@@ -1632,7 +2040,7 @@ void ConnHttpServerThreadPrivate::doDeleteTimeOfAccess(Json::Value root, MESSAGE
 
 	bool isOk = false;
 	QString timeOfAccess = "";
-	isOk = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, "", "", "", "", "", timeOfAccess, "");
+	isOk = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(person_uuid, "", "", "", "", "", timeOfAccess, "", QByteArray(), "", "", "", "", "", 0);
 
 	Json::Value json;
 	std::string timestamp;
@@ -1980,29 +2388,29 @@ void ConnHttpServerThreadPrivate::doOpenDoor(Json::Value root, MESSAGE_HEADER_S 
 	json["success"] = "1";
 	//json["status"] = status.toStdString().c_str();
 /*
-状态 
--1:默认 延时时间
-1:常开
-2:常闭
+çŠ¶æ€ 
+-1:é»˜è®¤ å»¶æ—¶æ—¶é—´
+1:å¸¸å¼€
+2:å¸¸é—­
 
-//状态,默认 -1  延时 时间　　　常开 1，常闭　2
+//çŠ¶æ€,é»˜è®¤ -1  å»¶æ—¶ æ—¶é—´ã€€ã€€ã€€å¸¸å¼€ 1ï¼Œå¸¸é—­ã€€2
 */
 	QString status = "-1";
 	status = QString::fromStdString(root["status"].asString());
 	//if (status.toInt() ==1 || status.toInt() ==2)
 	{
-		//保存　	
+		//ä¿å­˜ã€€	
 		
 		ReadConfig::GetInstance()->setDoor_Relay(status.toInt());		
 		LogD("%s %s[%d] status=%d \n", __FILE__, __FUNCTION__, __LINE__,status.toInt());		
 	} 
 	if (status.toInt() == -1)
 		YNH_LJX::Utils_Door::GetInstance()->OpenDoor("");
-	else if (status.toInt() == 1) //1:常开
+	else if (status.toInt() == 1) //1:å¸¸å¼€
 	{
         YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
 	}
-	else if (status.toInt() == 2) //2:常闭
+	else if (status.toInt() == 2) //2:å¸¸é—­
 	{        
         YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
 	}
@@ -2527,7 +2935,7 @@ void ConnHttpServerThreadPrivate::doSystemUpdate(Json::Value root, MESSAGE_HEADE
 
 	if (path.find("ftp://") != std::string::npos)
 	{
-		unsigned char TipMsg[128] = "正在下载固件...";
+		unsigned char TipMsg[128] = "æ­£åœ¨ä¸‹è½½å›ºä»¶...";
 //		GUI::getInstance()->showTipsMsg(TipMsg);
 		cmd = "cd /update; wget2 -c -nH -m --timeout=3 --ftp-user=admin --ftp-password=admin  " + path + " ; sync;";
 		YNH_LJX::RkUtils::Utils_ExecCmd(cmd.c_str());
@@ -2535,7 +2943,7 @@ void ConnHttpServerThreadPrivate::doSystemUpdate(Json::Value root, MESSAGE_HEADE
 		isOK = checkFileMd5Sum("/update/update.zip", strMd5);
 	} else if (path.find("http://") != std::string::npos)
 	{
-		unsigned char TipMsg[128] = "正在下载固件...";
+		unsigned char TipMsg[128] = "æ­£åœ¨ä¸‹è½½å›ºä»¶...";
 //		GUI::getInstance()->showTipsMsg(TipMsg);
 		cmd = "cd /update; /usr/bin/curl --connect-timeout 3  -o /mnt/user/update.zip  " + path + " ; sync;";
 		YNH_LJX::RkUtils::Utils_ExecCmd(cmd.c_str());
@@ -2906,7 +3314,7 @@ void *SyncPersonsListThread(void* arg)
 						}
 
 						bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(stPerson.szUUID, stPerson.szName,
-								stPerson.szIDCardNum, stPerson.szICCardNum, stPerson.szSex, stPerson.szGids, timeOfAccess, faceFeature);
+								stPerson.szIDCardNum, stPerson.szICCardNum, stPerson.szSex, stPerson.szGids, timeOfAccess, faceFeature ,QByteArray(), "", "", "", "", "", 0, 0);
 						LogD("%s %s[%d] RegPersonToDBAndRAM stPerson.szUUID %s isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__,
 								stPerson.szUUID, isSaveDBOk);
 						if (isSaveDBOk == true)
@@ -2923,7 +3331,7 @@ void *SyncPersonsListThread(void* arg)
 
 				} else if (std::string("update") == value)
 				{
-					/**批量更新用 先删除，再录入的方式操作**/
+					/**æ‰¹é‡æ›´æ–°ç”¨ å…ˆåˆ é™¤ï¼Œå†å½•å…¥çš„æ–¹å¼æ“ä½œ**/
 					if (RegisteredFacesDB::GetInstance()->GetPersonTotalNumByPersonUUIDFromRAM(stPerson.szUUID) != 0)
 					{
 						RegisteredFacesDB::GetInstance()->DelPersonByPersionUUIDFromDBAndRAM(stPerson.szUUID);
@@ -2972,7 +3380,7 @@ void *SyncPersonsListThread(void* arg)
 						}
 
 						bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(stPerson.szUUID, stPerson.szName,
-								stPerson.szIDCardNum, stPerson.szICCardNum, stPerson.szSex, stPerson.szGids, timeOfAccess, faceFeature);
+								stPerson.szIDCardNum, stPerson.szICCardNum, stPerson.szSex, stPerson.szGids, timeOfAccess, faceFeature, QByteArray(), "", "", "", "", "", 0, 0);
 						LogD("%s %s[%d] RegPersonToDBAndRAM isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
 						if (isSaveDBOk == true)
 						{
@@ -2980,7 +3388,7 @@ void *SyncPersonsListThread(void* arg)
 							fout.write("\n",1);
 						}
 					}
-					/**批量更新用 先删除，再录入的方式操作 end**/
+					/**æ‰¹é‡æ›´æ–°ç”¨ å…ˆåˆ é™¤ï¼Œå†å½•å…¥çš„æ–¹å¼æ“ä½œ end**/
 
 				}
 				memset(&stPerson, 0, sizeof(Person_S));
@@ -3241,7 +3649,7 @@ bool ConnHttpServerThreadPrivate::doNextMessage()
 	password = md5sum(password);
 	password = md5sum(password);
 	transform(password.begin(), password.end(), password.begin(), ::tolower);
-	if (password != stMsgHeader.password && stMsgHeader.msg_type != "set_device_password")
+	/*if (password != stMsgHeader.password && stMsgHeader.msg_type != "set_device_password")
 	{
 		LogE("%s %s[%d] error password , now password %s\n", __FILE__, __FUNCTION__, __LINE__, mHttpServerPassword.toStdString().c_str());
 		Json::Value json;
@@ -3266,7 +3674,7 @@ bool ConnHttpServerThreadPrivate::doNextMessage()
 			msg = ret;
 		}
 		return false;
-	}
+	}*/
 
 	if (stMsgHeader.sn != sn.toStdString())
 	{
@@ -3294,106 +3702,106 @@ bool ConnHttpServerThreadPrivate::doNextMessage()
 		return false;
 	}
 
-	if (stMsgHeader.msg_type == std::string("add") || stMsgHeader.msg_type == std::string("add_person")) //注册人员
+	if (stMsgHeader.msg_type == std::string("add") || stMsgHeader.msg_type == std::string("add_person")) //æ³¨å†Œäººå‘˜
 	{
 		doAddPerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("add_persons")) //批量注册人员
+	} else if (stMsgHeader.msg_type == std::string("add_persons")) //æ‰¹é‡æ³¨å†Œäººå‘˜
 	{
 		doAddPersons(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("add_personswithreason")) //批量注册人员 带原因
+	} else if (stMsgHeader.msg_type == std::string("add_personswithreason")) //æ‰¹é‡æ³¨å†Œäººå‘˜ å¸¦åŽŸå› 
 	{
 		doAddPersonswithreason(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("delete") || stMsgHeader.msg_type == std::string("delete_person")) //删除人员
+	} else if (stMsgHeader.msg_type == std::string("delete") || stMsgHeader.msg_type == std::string("delete_person")) //åˆ é™¤äººå‘˜
 	{
 		doDeletePerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("delete_all") || stMsgHeader.msg_type == std::string("delete_all_person")) //删除所有人员
+	} else if (stMsgHeader.msg_type == std::string("delete_all") || stMsgHeader.msg_type == std::string("delete_all_person")) //åˆ é™¤æ‰€æœ‰äººå‘˜
 	{
 		doDeleteAllPerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("update") || stMsgHeader.msg_type == std::string("update_person")) //注册人员
+	} else if (stMsgHeader.msg_type == std::string("update") || stMsgHeader.msg_type == std::string("update_person")) //æ³¨å†Œäººå‘˜
 	{
 		doUpdatePerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("find") || stMsgHeader.msg_type == std::string("find_person")) //查询指定人员
+	} else if (stMsgHeader.msg_type == std::string("find") || stMsgHeader.msg_type == std::string("find_person")) //æŸ¥è¯¢æŒ‡å®šäººå‘˜
 	{
 		doFindPerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("get_all") || stMsgHeader.msg_type == std::string("get_all_person")) //查询所有人员
+	} else if (stMsgHeader.msg_type == std::string("get_all") || stMsgHeader.msg_type == std::string("get_all_person")) //æŸ¥è¯¢æ‰€æœ‰äººå‘˜
 	{
 		doGetAllPerson(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("get_all_group")) //查询所有部门
+	} else if (stMsgHeader.msg_type == std::string("get_all_group")) //æŸ¥è¯¢æ‰€æœ‰éƒ¨é—¨
 	{
 
-	} else if (stMsgHeader.msg_type == std::string("set_pass_permission")) //设置用户通行权限
+	} else if (stMsgHeader.msg_type == std::string("set_pass_permission")) //è®¾ç½®ç”¨æˆ·é€šè¡Œæƒé™
 	{
 		doSetTimeOfAccess(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("delete_pass_permission")) //删除用户通行权限
+	} else if (stMsgHeader.msg_type == std::string("delete_pass_permission")) //åˆ é™¤ç”¨æˆ·é€šè¡Œæƒé™
 	{
 		doDeleteTimeOfAccess(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("device_delete_pass_permission")) //删除设备通行权限
+	} else if (stMsgHeader.msg_type == std::string("device_delete_pass_permission")) //åˆ é™¤è®¾å¤‡é€šè¡Œæƒé™
 	{
 
-	} else if (stMsgHeader.msg_type == std::string("delete_all_record")) //删除所有识别记录
+	} else if (stMsgHeader.msg_type == std::string("delete_all_record")) //åˆ é™¤æ‰€æœ‰è¯†åˆ«è®°å½•
 	{
 		doDeleteAllPersonRecord(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("records_select")) //查询识别记录
+	} else if (stMsgHeader.msg_type == std::string("records_select")) //æŸ¥è¯¢è¯†åˆ«è®°å½•
 	{
 		doGetPersonRecord(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("records_select_done")) //facetools 定时查询记录后成功返回，需要修改数据库中记录状态
+	} else if (stMsgHeader.msg_type == std::string("records_select_done")) //facetools å®šæ—¶æŸ¥è¯¢è®°å½•åŽæˆåŠŸè¿”å›žï¼Œéœ€è¦ä¿®æ”¹æ•°æ®åº“ä¸­è®°å½•çŠ¶æ€
 	{
 		doUpdatePersonRecordUploadFlag(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("delete_record")) //删除指定识别记录
+	} else if (stMsgHeader.msg_type == std::string("delete_record")) //åˆ é™¤æŒ‡å®šè¯†åˆ«è®°å½•
 	{
 		doDeletePersonRecord(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("open_door")) //开闸
+	} else if (stMsgHeader.msg_type == std::string("open_door")) //å¼€é—¸
 	{
 		doOpenDoor(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("restart")) //重启
+	} else if (stMsgHeader.msg_type == std::string("restart")) //é‡å¯
 	{
 		doReboot(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("net_config")) //配置设备网络
+	} else if (stMsgHeader.msg_type == std::string("net_config")) //é…ç½®è®¾å¤‡ç½‘ç»œ
 	{
 		doSetNetwork(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("get_dev_config")) //获取设备设置信息
+	} else if (stMsgHeader.msg_type == std::string("get_dev_config")) //èŽ·å–è®¾å¤‡è®¾ç½®ä¿¡æ¯
 	{
 		doGetDeviceConfig(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("dev_config") || stMsgHeader.msg_type == std::string("set_dev_config")) //更改设备设置
+	} else if (stMsgHeader.msg_type == std::string("dev_config") || stMsgHeader.msg_type == std::string("set_dev_config")) //æ›´æ”¹è®¾å¤‡è®¾ç½®
 	{
 		doSetDeviceConfig(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("factory_setting")) //恢复默认设置
+	} else if (stMsgHeader.msg_type == std::string("factory_setting")) //æ¢å¤é»˜è®¤è®¾ç½®
 	{
 		doResetFactorySetting(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("delete_all_user_data")) //删除所有用户数据，恢复到出厂状态
+	} else if (stMsgHeader.msg_type == std::string("delete_all_user_data")) //åˆ é™¤æ‰€æœ‰ç”¨æˆ·æ•°æ®ï¼Œæ¢å¤åˆ°å‡ºåŽ‚çŠ¶æ€
 	{
 
-	} else if (stMsgHeader.msg_type == std::string("algo_setting")) //设置算法参数
+	} else if (stMsgHeader.msg_type == std::string("algo_setting")) //è®¾ç½®ç®—æ³•å‚æ•°
 	{
 		doSetAlgoParam(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("algo_reset")) //恢复默认算法
+	} else if (stMsgHeader.msg_type == std::string("algo_reset")) //æ¢å¤é»˜è®¤ç®—æ³•
 	{
 
-	} else if (stMsgHeader.msg_type == std::string("dev_version")) //获取设备版本号
+	} else if (stMsgHeader.msg_type == std::string("dev_version")) //èŽ·å–è®¾å¤‡ç‰ˆæœ¬å·
 	{
 		doGetDeviceVersion(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("get_picture")) //获取设备实时拍照图片
+	} else if (stMsgHeader.msg_type == std::string("get_picture")) //èŽ·å–è®¾å¤‡å®žæ—¶æ‹ç…§å›¾ç‰‡
 	{
 		doTakePicture(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("system_update")) //ota 升级命令
+	} else if (stMsgHeader.msg_type == std::string("system_update")) //ota å‡çº§å‘½ä»¤
 	{
 		doSystemUpdate(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("set_static_ip")) // 静态IP设置
+	} else if (stMsgHeader.msg_type == std::string("set_static_ip")) // é™æ€IPè®¾ç½®
 	{
 		doSetStaticLanIP(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("set_device_password")) //设置密码
+	} else if (stMsgHeader.msg_type == std::string("set_device_password")) //è®¾ç½®å¯†ç 
 	{
 		doSetDeviceHttpPassword(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("save_file")) //文件保存到设备
+	} else if (stMsgHeader.msg_type == std::string("save_file")) //æ–‡ä»¶ä¿å­˜åˆ°è®¾å¤‡
 	{
 		doSaveFile(root, stMsgHeader);
-	} else if (stMsgHeader.msg_type == std::string("sync_persons_list")) //同步人员列表
+	} else if (stMsgHeader.msg_type == std::string("sync_persons_list")) //åŒæ­¥äººå‘˜åˆ—è¡¨
 	{
 		doSyncPersonsList(root, stMsgHeader);
 	} else if (stMsgHeader.msg_type == std::string("set_device_httpserver"))
 	{
 
-	} else if (stMsgHeader.msg_type == std::string("set_timer")) // 时间设置
+	} else if (stMsgHeader.msg_type == std::string("set_timer")) // æ—¶é—´è®¾ç½®
 	{
 
 	}
@@ -3403,7 +3811,7 @@ bool ConnHttpServerThreadPrivate::doNextMessage()
 		return false;
 	}
 
-//假如没有返回 msg_type 为 idle，则服务器会有后续需要处理的消息
+//å‡å¦‚æ²¡æœ‰è¿”å›ž msg_type ä¸º idleï¼Œåˆ™æœåŠ¡å™¨ä¼šæœ‰åŽç»­éœ€è¦å¤„ç†çš„æ¶ˆæ¯
 	if (stMsgHeader.msg_type != std::string("idle"))
 	{
 		return true;
@@ -3413,52 +3821,62 @@ bool ConnHttpServerThreadPrivate::doNextMessage()
 
 ConnHttpServerThread::ConnHttpServerThread(QObject *parent) :
         QThread(parent), //
-        d_ptr(new ConnHttpServerThreadPrivate(this))
+        d_ptr(new ConnHttpServerThreadPrivate(this)),
+		     cleanupTimer(nullptr)  // Initialize cleanupTimer
 {
-    qDebug() << "THREAD_DEBUG: Initializing ConnHttpServerThread";
+    //qDebug() << "THREAD_DEBUG: Initializing ConnHttpServerThread";
     
     // Check network configuration
     QString serverUrl = ReadConfig::GetInstance()->getPerson_Registration_Address();
     QString serverPassword = ReadConfig::GetInstance()->getPerson_Registration_Password();
     QString serverAddress = ReadConfig::GetInstance()->getSrv_Manager_Address();
     
-    qDebug() << "THREAD_DEBUG: Registration Server URL: " << serverUrl;
-    qDebug() << "THREAD_DEBUG: Registration Server Password length: " << serverPassword.length();
-    qDebug() << "THREAD_DEBUG: Server Manager Address: " << serverAddress;
+    //qDebug() << "THREAD_DEBUG: Registration Server URL: " << serverUrl;
+    //qDebug() << "THREAD_DEBUG: Registration Server Password length: " << serverPassword.length();
+    //qDebug() << "THREAD_DEBUG: Server Manager Address: " << serverAddress;
     
     // Check if network interfaces are up
     system("ifconfig > /tmp/ifconfig_debug.txt");
     system("ping -c 1 8.8.8.8 > /tmp/ping_debug.txt 2>&1");
     
-    qDebug() << "THREAD_DEBUG: Network diagnostic info saved to /tmp/ifconfig_debug.txt and /tmp/ping_debug.txt";
+    //qDebug() << "THREAD_DEBUG: Network diagnostic info saved to /tmp/ifconfig_debug.txt and /tmp/ping_debug.txt";
     
+	initializeCleanup();
+
     this->start();
     if(ReadConfig::GetInstance()->getPost_PersonRecord_Address().size() > 3)
     {
-        qDebug() << "THREAD_DEBUG: Starting PostPersonRecordThread";
+        //qDebug() << "THREAD_DEBUG: Starting PostPersonRecordThread";
         PostPersonRecordThread::GetInstance();
     }
 }
 
 ConnHttpServerThread::~ConnHttpServerThread()
 {
-	Q_D(ConnHttpServerThread);
-	this->requestInterruption();
-	d->pauseCond.wakeOne();
+    Q_D(ConnHttpServerThread);
+    this->requestInterruption();
+    d->pauseCond.wakeOne();
 
-	this->quit();
-	this->wait();
+    // Clean up timer
+    if (cleanupTimer) {
+        cleanupTimer->stop();
+        delete cleanupTimer;
+        cleanupTimer = nullptr;
+    }
+
+    this->quit();
+    this->wait();
 }
 
 void ConnHttpServerThread::run()
 {
     Q_D(ConnHttpServerThread);
-    qDebug() << "THREAD_DEBUG: ConnHttpServerThread starting...";
+    //qDebug() << "THREAD_DEBUG: ConnHttpServerThread starting...";
     sleep(5);
     
     while (true)
     {
-        qDebug() << "THREAD_DEBUG: Thread loop iteration";
+        //qDebug() << "THREAD_DEBUG: Thread loop iteration";
         d->sync.lock();
         
         QString oldUrl = d->mHttpServerUrl;
@@ -3482,6 +3900,9 @@ void ConnHttpServerThread::run()
         
         qDebug() << "THREAD_DEBUG: Calling doHeartbeat...";
         d->doHeartbeat();
+
+        // Use the unified sync function that checks both time and count
+        checkAndSyncUsers(m_lastHeartbeatResponse);
 
         qDebug() << "THREAD_DEBUG: Processing messages...";
         while (d->doNextMessage())
@@ -3560,149 +3981,1289 @@ bool ConnHttpServerThread::reportDeviceInfo()
 	return false;
 }
 
+void ConnHttpServerThread::updateSyncDisplay(const QString &status, int currentCount, int totalCount)
+{
+    qDebug() << "DEBUG: updateSyncDisplay called with status:" << status << "count:" << currentCount << "/" << totalCount;
+    
+    // Update the main UI with sync information using the correct method
+    if (qXLApp && qXLApp->GetFaceMainFrm()) {
+        FaceMainFrm* mainFrm = qXLApp->GetFaceMainFrm();
+        
+        // Use the correct way to access FaceHomeFrm through FaceMainFrm
+        // Based on the code, we need to access it through the private member
+        // We'll add public methods to FaceMainFrm to forward the calls
+        mainFrm->updateSyncStatus(status);
+        mainFrm->updateSyncUserCount(currentCount, totalCount);
+        
+        // Update last sync time
+        QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm");
+        mainFrm->updateLastSyncTime(currentTime);
+        
+        qDebug() << "DEBUG: UI updated successfully through FaceMainFrm";
+    } else {
+        qDebug() << "WARNING: qXLApp or GetFaceMainFrm() is null, cannot update UI";
+    }
+}
 
+bool ConnHttpServerThread::isServerReachable()
+{
+    // Simple ping to your server endpoint
+    // Return true if server responds, false otherwise
+    return true; // Implement based on your server API
+}
 
-bool ConnHttpServerThread::sendUserToServer(const QString &person_uuid, const QString &name, 
-    const QString &idCard, const QString &icCard, 
-    const QString &sex, const QString ,
-    const QString &timeOfAccess, 
-    const QByteArray &faceFeature)
+void ConnHttpServerThread::updateTenantName(const QString &tenantName)
+{
+    qDebug() << "DEBUG: updateTenantName called with:" << tenantName;
+    
+    if (qXLApp && qXLApp->GetFaceMainFrm()) {
+        FaceMainFrm* mainFrm = qXLApp->GetFaceMainFrm();
+        mainFrm->setTenantName(tenantName);
+        qDebug() << "DEBUG: Tenant name updated successfully";
+    } else {
+        qDebug() << "WARNING: qXLApp or GetFaceMainFrm() is null, cannot update tenant name";
+    }
+}
+
+bool ConnHttpServerThread::sendUserToServer(const QString &employeeId, const QString &name, 
+    const QString &idCard, const QString &icCard, const QString &sex, const QString &department,
+    const QString &timeOfAccess, const QByteArray &faceFeature)
 {
     Q_D(ConnHttpServerThread);
-    qDebug() << "SEND_USER_DEBUG: Starting sendUserToServer function";
+    
+    qDebug() << "DEBUG: sendUserToServer - Starting to send user:" << name << "(" << employeeId << ")";
     
     QString regServerUrl = ReadConfig::GetInstance()->getPerson_Registration_Address();
-    qDebug() << "SEND_USER_DEBUG: Server URL: " << regServerUrl;
-    
     if (regServerUrl.isEmpty()) {
-        qDebug() << "SEND_USER_DEBUG: Registration server URL is empty, canceling operation";
+        qDebug() << "ERROR: Registration server URL not configured";
         return false;
     }
-
-    Json::Value json;
-    std::string timestamp = getTime();
-    qDebug() << "SEND_USER_DEBUG: Generated timestamp: " << QString::fromStdString(timestamp);
-
-    QString regPassword = ReadConfig::GetInstance()->getPerson_Registration_Password();
-    qDebug() << "SEND_USER_DEBUG: Registration password length: " << regPassword.length();
+    
+    // Save original URL
     QString originalUrl = d->mHttpServerUrl;
     d->mHttpServerUrl = regServerUrl;
+    
+    // Prepare clean JSON with only essential fields
+    Json::Value json;
+    std::string timestamp = getTime();
+    QString regPassword = ReadConfig::GetInstance()->getPerson_Registration_Password();
+    
     std::string password = regPassword.toStdString() + timestamp;
     password = md5sum(password);
     password = md5sum(password);
     transform(password.begin(), password.end(), password.begin(), ::tolower);
-    qDebug() << "SEND_USER_DEBUG: Generated password hash: " << QString::fromStdString(password);
-
-    json["msg_type"] = "register_person";
+    
+    // === CLEAN JSON STRUCTURE (Essential fields only) ===
+    json["msg_type"] = "added_face_data";
+    json["device"]   ="Ai Device";
     json["sn"] = d->sn.toStdString().c_str();
     json["timestamp"] = timestamp.c_str();
     json["password"] = password.c_str();
-
-    json["person_uuid"] = person_uuid.toStdString().c_str();
-    json["person_name"] = name.toStdString().c_str();
-    json["id_card_no"] = idCard.toStdString().c_str();
-    json["card_no"] = icCard.toStdString().c_str();
-    json["male"] = sex.toStdString().c_str();
-	json["time_of_access"] = timeOfAccess.toStdString().c_str();
-
-    std::string base64Feature = cereal::base64::encode(
-        (unsigned char*)faceFeature.data(), 
-        faceFeature.size()
-    );
-    json["face_feature"] = base64Feature.c_str();
     
-    qDebug() << "SEND_USER_DEBUG: Prepared JSON with user data for " << name;
-    qDebug() << "SEND_USER_DEBUG: About to call doPostJson...";
-
+    // Core user data
+    json["employeeId"] = employeeId.toStdString().c_str();
+    json["name"] = name.toStdString().c_str();
+    json["gender"] = sex.toStdString().c_str();
+    json["idcardnum"] = idCard.toStdString().c_str();
+    json["lastModified"] = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss").toStdString().c_str();
+    
+    // === FACE FEATURE DATA PROCESSING ===
+    bool hasFaceDataToUpload = false;
+    
+    // Try to get face image data from cropped image file
+    QString croppedImagePath = QString("/mnt/user/reg_face_image/%1.jpg").arg(employeeId);
+    QFile croppedImageFile(croppedImagePath);
+    QByteArray faceImageData;
+    
+    if (croppedImageFile.exists() && croppedImageFile.open(QIODevice::ReadOnly)) {
+        faceImageData = croppedImageFile.readAll();
+        croppedImageFile.close();
+        
+        if (faceImageData.size() > 1000) { // Valid image size
+            // Encode face image to base64
+            std::string base64FaceData = cereal::base64::encode(
+                (unsigned char*)faceImageData.data(), 
+                faceImageData.size()
+            );
+            
+            // Add face feature to JSON (CLEAN - no debug fields)
+            json["faceFeature"] = base64FaceData.c_str();
+            hasFaceDataToUpload = true;
+            
+            qDebug() << "DEBUG: Using cropped face image data:" << faceImageData.size() << "bytes";
+        }
+    }
+    
+    // Fallback to provided face feature if no image file
+    if (!hasFaceDataToUpload && !faceFeature.isEmpty()) {
+        // Check if it's already base64 encoded
+        QString faceDataString = QString::fromLatin1(faceFeature);
+        QRegExp base64Regex("^[A-Za-z0-9+/]*={0,2}$");
+        bool isAlreadyBase64 = base64Regex.exactMatch(faceDataString.left(100));
+        
+        if (isAlreadyBase64 && faceFeature.size() > 10000) {
+            // Use as-is (already base64)
+            json["faceFeature"] = faceDataString.toStdString().c_str();
+            hasFaceDataToUpload = true;
+            qDebug() << "DEBUG: Using base64 face feature from parameter";
+        } else if (faceFeature.size() > 100) {
+            // Encode binary data to base64
+            std::string base64FaceData = cereal::base64::encode(
+                (unsigned char*)faceFeature.data(), 
+                faceFeature.size()
+            );
+            json["faceFeature"] = base64FaceData.c_str();
+            hasFaceDataToUpload = true;
+            qDebug() << "DEBUG: Encoded binary face feature to base64";
+        }
+    }
+    
+    // If no face data available, don't include faceFeature field at all
+    if (!hasFaceDataToUpload) {
+        qDebug() << "DEBUG: No face data available - sending user info only";
+    }
+    
+    qDebug() << "DEBUG: Sending clean JSON to server (hasFaceData:" << hasFaceDataToUpload << ")";
+    
+    // Send request
     QString ret = d->doPostJson(json);
     
-    qDebug() << "SEND_USER_DEBUG: doPostJson returned response length: " << ret.length();
-    qDebug() << "SEND_USER_DEBUG: Response (first 100 chars): " << ret.left(100);
+    // Restore original URL
     d->mHttpServerUrl = originalUrl;
-    return ret.length() > 0;
+    
+    // ===== NEW: PARSE RESPONSE FOR FACE DATA SYNC =====
+    if (ret.length() > 0) {
+        qDebug() << "SUCCESS: Received server response, length:" << ret.length();
+        
+        // Parse the response JSON
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (reader.parse(ret.toStdString(), responseJson)) {
+            qDebug() << "DEBUG: Successfully parsed server response JSON";
+            
+            // === RESPONSE VERIFICATION FOR DEBUGGING ===
+            qDebug() << "=== SERVER RESPONSE ANALYSIS ===";
+            qDebug() << "Response fields available:";
+            for (const auto& key : responseJson.getMemberNames()) {
+                qDebug() << "  Field:" << QString::fromStdString(key);
+            }
+            
+            // Check basic response status
+            QString result = QString::fromStdString(responseJson.get("result", "0").asString());
+            QString success = QString::fromStdString(responseJson.get("success", "0").asString());
+            QString message = QString::fromStdString(responseJson.get("message", "").asString());
+            
+            qDebug() << "Server result:" << result;
+            qDebug() << "Server success:" << success;
+            qDebug() << "Server message:" << message;
+            
+            // === FACE DATA PROCESSING FOR CROSS-DEVICE SYNC ===
+            bool foundFaceDataInResponse = false;
+            QByteArray responseFaceFeature;
+            
+            // Method 1: Check for employeeData object (recommended format)
+            if (responseJson.isMember("employeeData") && responseJson["employeeData"].isObject()) {
+                Json::Value employeeData = responseJson["employeeData"];
+                qDebug() << "âœ“ Found employeeData object in response";
+                
+                if (employeeData.isMember("faceFeature") && !employeeData["faceFeature"].isNull()) {
+                    std::string base64FaceFeature = employeeData["faceFeature"].asString();
+                    qDebug() << "âœ“ Found faceFeature in employeeData, length:" << base64FaceFeature.length();
+                    
+                    if (base64FaceFeature.length() > 100) {
+                        // Decode the base64 face feature
+                        try {
+                            std::string decodedFeature = cereal::base64::decode(base64FaceFeature);
+                            responseFaceFeature = QByteArray(decodedFeature.data(), decodedFeature.size());
+                            foundFaceDataInResponse = true;
+                            
+                            qDebug() << "âœ“ Successfully decoded face feature:" << responseFaceFeature.size() << "bytes";
+                            
+                            // Verify it's a valid face feature (should be 512 bytes for most systems)
+                            if (responseFaceFeature.size() == 512 || responseFaceFeature.size() >= 128) {
+                                qDebug() << "âœ“ Face feature size validation passed";
+                            } else {
+                                qDebug() << "WARNING: Unexpected face feature size:" << responseFaceFeature.size();
+                            }
+                        } catch (const std::exception& e) {
+                            qDebug() << "ERROR: Failed to decode face feature:" << e.what();
+                        }
+                    }
+                }
+                
+                // Also extract other sync-relevant data
+                if (employeeData.isMember("employeeId")) {
+                    QString responseEmployeeId = QString::fromStdString(employeeData["employeeId"].asString());
+                    qDebug() << "Response employeeId:" << responseEmployeeId;
+                    
+                    if (responseEmployeeId != employeeId) {
+                        qDebug() << "WARNING: EmployeeId mismatch - sent:" << employeeId << "received:" << responseEmployeeId;
+                    }
+                }
+                
+                if (employeeData.isMember("firstName")) {
+                    QString responseFirstName = QString::fromStdString(employeeData["firstName"].asString());
+                    qDebug() << "Response firstName:" << responseFirstName;
+                }
+                
+                if (employeeData.isMember("lastModified")) {
+                    QString responseLastModified = QString::fromStdString(employeeData["lastModified"].asString());
+                    qDebug() << "Response lastModified:" << responseLastModified;
+                }
+            }
+            
+            // Method 2: Check for direct faceFeature field (alternative format)
+            else if (responseJson.isMember("faceFeature") && !responseJson["faceFeature"].isNull()) {
+                std::string base64FaceFeature = responseJson["faceFeature"].asString();
+                qDebug() << "âœ“ Found direct faceFeature field, length:" << base64FaceFeature.length();
+                
+                if (base64FaceFeature.length() > 100) {
+                    try {
+                        std::string decodedFeature = cereal::base64::decode(base64FaceFeature);
+                        responseFaceFeature = QByteArray(decodedFeature.data(), decodedFeature.size());
+                        foundFaceDataInResponse = true;
+                        
+                        qDebug() << "âœ“ Successfully decoded direct face feature:" << responseFaceFeature.size() << "bytes";
+                    } catch (const std::exception& e) {
+                        qDebug() << "ERROR: Failed to decode direct face feature:" << e.what();
+                    }
+                }
+            }
+            
+            // Method 3: Check for faceData array (legacy format)
+            else if (responseJson.isMember("faceData") && responseJson["faceData"].isArray()) {
+                Json::Value faceDataArray = responseJson["faceData"];
+                if (faceDataArray.size() > 0 && faceDataArray[0].isString()) {
+                    std::string base64FaceFeature = faceDataArray[0].asString();
+                    qDebug() << "âœ“ Found faceData array, length:" << base64FaceFeature.length();
+                    
+                    if (base64FaceFeature.length() > 100) {
+                        try {
+                            std::string decodedFeature = cereal::base64::decode(base64FaceFeature);
+                            responseFaceFeature = QByteArray(decodedFeature.data(), decodedFeature.size());
+                            foundFaceDataInResponse = true;
+                            
+                            qDebug() << "âœ“ Successfully decoded faceData array:" << responseFaceFeature.size() << "bytes";
+                        } catch (const std::exception& e) {
+                            qDebug() << "ERROR: Failed to decode faceData array:" << e.what();
+                        }
+                    }
+                }
+            }
+            
+            // === CROSS-DEVICE SYNC ENABLEMENT ===
+            if (foundFaceDataInResponse && !responseFaceFeature.isEmpty()) {
+                qDebug() << "SUCCESS: Server returned face data for cross-device sync!";
+                qDebug() << "Face feature available for other devices during sync";
+                qDebug() << "Cross-device face recognition: ENABLED";
+                
+                // Optional: Store the returned face feature locally for verification
+                // This ensures the exact same feature that other devices will get during sync
+                QString verificationPath = QString("/mnt/user/reg_face_image/%1_server_feature.dat").arg(employeeId);
+                QFile featureFile(verificationPath);
+                if (featureFile.open(QIODevice::WriteOnly)) {
+                    featureFile.write(responseFaceFeature);
+                    featureFile.close();
+                    qDebug() << "DEBUG: Saved server face feature for verification:" << verificationPath;
+                }
+                
+                qDebug() << "=== CROSS-DEVICE SYNC STATUS: SUCCESS ===";
+                return true;
+                
+            } else {
+                qDebug() << "WARNING: Server did not return face data in response";
+                qDebug() << "Cross-device face recognition may not work properly";
+                qDebug() << "Other devices will not be able to recognize this person's face";
+                
+                if (result == "1" && success == "1") {
+                    qDebug() << "Registration successful but missing face data for sync";
+                    qDebug() << "=== CROSS-DEVICE SYNC STATUS: PARTIAL ===";
+                    return true; // Registration succeeded, sync may be limited
+                } else {
+                    qDebug() << "Registration failed - server returned error";
+                    qDebug() << "=== CROSS-DEVICE SYNC STATUS: FAILED ===";
+                    return false;
+                }
+            }
+            
+        } else {
+            qDebug() << "ERROR: Failed to parse server response JSON";
+            qDebug() << "Raw response:" << ret.left(200) << "...";
+            return false;
+        }
+        
+    } else {
+        qDebug() << "ERROR: Empty response from server";
+        return false;
+    }
 }
-
 
 void ConnHttpServerThread::checkAndSyncUsers(const QString& heartbeatResponse)
 {
-    qDebug() << "DEBUG: checkAndSyncUsers - Starting with heartbeat response length: " << heartbeatResponse.length();
+    qDebug() << "DEBUG: checkAndSyncUsers - Starting sync check with corrected server vs device time comparison";
     
-	ReadConfig readConfig;
-    if (!readConfig.getSyncEnabled()) {
+    // Check if sync is enabled
+    bool syncEnabled = ReadConfig::GetInstance()->getSyncEnabled();
+    qDebug() << "DEBUG: checkAndSyncUsers - Sync enabled:" << syncEnabled;
+    
+    // Get local user count for display
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int localCount = localUsers.size();
+    
+    if (!syncEnabled) {
         LogD("%s %s[%d] Sync is disabled. Skipping user sync.\n", __FILE__, __FUNCTION__, __LINE__);
-        return; // Do nothing if sync is disabled
+        qDebug() << "DEBUG: checkAndSyncUsers - Sync disabled, updating display and returning";
+        updateSyncDisplay("Disabled", localCount, 0);
+        updateLocalFaceCount();
+        return;
     }
 
-	LogD("%s %s[%d] Sync is enabled. Running user sync.\n", __FILE__, __FUNCTION__, __LINE__);
-	
-    // Parse the heartbeat response
+    // Show sync starting with current local count
+    updateSyncDisplay("Checking", localCount, 0);
+    
+    LogD("%s %s[%d] DEBUG: Sync is enabled, proceeding with sync check\n", __FILE__, __FUNCTION__, __LINE__);
+
+    // Parse heartbeat response
     Json::Reader reader;
     Json::Value responseJson;
     
     if (!reader.parse(heartbeatResponse.toStdString(), responseJson)) {
         qDebug() << "ERROR: checkAndSyncUsers - Failed to parse heartbeat response JSON";
+        updateSyncDisplay("Failed", localCount, 0);
         return;
     }
-    qDebug() << "DEBUG: checkAndSyncUsers - Successfully parsed heartbeat response JSON";
     
-    // Check if the response has the person count in TotalUserCount
+    qDebug() << "DEBUG: checkAndSyncUsers - Successfully parsed heartbeat JSON";
+    
+    // Extract server info
     int serverUserCount = 0;
-    bool hasCount = false;
+    QString currentServerLastModified = "";
     
     if (responseJson.isMember("TotalUserCount")) {
         serverUserCount = atoi(responseJson["TotalUserCount"].asString().c_str());
-        hasCount = true;
-        qDebug() << "DEBUG: checkAndSyncUsers - Found TotalUserCount: " << serverUserCount;
+        qDebug() << "DEBUG: checkAndSyncUsers - Server user count:" << serverUserCount;
+    }
+    
+    // Get current server's date_updated from this heartbeat
+    if (responseJson.isMember("date_updated") && !responseJson["date_updated"].isNull()) {
+        currentServerLastModified = QString::fromStdString(responseJson["date_updated"].asString());
+    }
+    else if (responseJson.isMember("dateUpdated") && !responseJson["dateUpdated"].isNull()) {
+        currentServerLastModified = QString::fromStdString(responseJson["dateUpdated"].asString());
+    }
+    else if (responseJson.isMember("lastModified") && !responseJson["lastModified"].isNull()) {
+        currentServerLastModified = QString::fromStdString(responseJson["lastModified"].asString());
+    }
+    else if (responseJson.isMember("lastUpdatedAt") && !responseJson["lastUpdatedAt"].isNull()) {
+        currentServerLastModified = QString::fromStdString(responseJson["lastUpdatedAt"].asString());
+    }
+    
+    updateSyncDisplay("Analyzing", localCount, serverUserCount);
+    
+    // === ENHANCED SYNC DECISION LOGIC (SAME AS WORKING FUNCTION) ===
+    bool needsSync = false;
+    QString syncReason = "";
+    
+    // Get local last modified time (using working function's approach)
+    QDateTime localLastModifiedTime = getLocalLastModifiedTime();
+    QString localLastModified = localLastModifiedTime.isValid() ? 
+        localLastModifiedTime.toString("yyyy/MM/dd HH:mm:ss") : "None";
+    
+    qDebug() << "DEBUG: checkAndSyncUsers - Local lastModified (IST):" << localLastModified;
+    
+    // Convert server UTC time to IST for comparison (same as working function)
+    QDateTime serverLastModifiedIST;
+    if (!currentServerLastModified.isEmpty()) {
+        serverLastModifiedIST = convertUTCToIST(currentServerLastModified);
+        qDebug() << "DEBUG: checkAndSyncUsers - Server lastModified converted to IST:" 
+                 << (serverLastModifiedIST.isValid() ? serverLastModifiedIST.toString("yyyy/MM/dd HH:mm:ss") : "Invalid");
+    }
+    
+    // Reason 1: Count mismatch (ENHANCED - same logic as working function)
+    if (serverUserCount != localCount) {
+        needsSync = true;
+        syncReason = QString("Count mismatch - Server: %1, Local: %2").arg(serverUserCount).arg(localCount);
+        qDebug() << "DEBUG: checkAndSyncUsers - " << syncReason;
+    } 
+    // Reason 2: Time mismatch (ONLY if no count mismatch - same as working function)
+    else if (serverLastModifiedIST.isValid() && localLastModifiedTime.isValid() && 
+             serverLastModifiedIST > localLastModifiedTime) {
+        needsSync = true;
+        syncReason = "Time mismatch - Server has newer data";
+        qDebug() << "DEBUG: checkAndSyncUsers - " << syncReason;
     } else {
-        qDebug() << "DEBUG: checkAndSyncUsers - No TotalUserCount found in response";
+        qDebug() << "DEBUG: checkAndSyncUsers - No sync needed";
+    }
+    
+    // === MAIN SYNC EXECUTION ===
+    if (needsSync) {
+        qDebug() << "DEBUG: checkAndSyncUsers - Starting sync. Reason:" << syncReason;
         
-        // Dump response keys for debugging
-        qDebug() << "DEBUG: Available keys in heartbeat response:";
-        for (const auto& key : responseJson.getMemberNames()) {
-            qDebug() << "  Key: " << QString::fromStdString(key);
+        // Perform the actual sync
+        performFullSync(serverUserCount);
+        
+        if (!currentServerLastModified.isEmpty()) {
+        Q_D(ConnHttpServerThread);
+        QDateTime newServerTimeIST = d->convertServerUTCToIST(currentServerLastModified);
+        if (newServerTimeIST.isValid()) {
+            QString newServerTimeFormatted = newServerTimeIST.toString("yyyy/MM/dd HH:mm:ss");
+            
+            // *** CHANGED: Replace file operations with debug messages ***
+            QString serverRefTimeFile = "/mnt/user/sync_data/server_reference_time.txt";
+            qDebug() << "SYNC_DATA_DEBUG: Would write to file:" << serverRefTimeFile;
+            qDebug() << "SYNC_DATA_DEBUG: Content would be:" << newServerTimeFormatted;
+            qDebug() << "SYNC_DATA_DEBUG: SOURCE=SERVER_LAST_MODIFIED_REFERENCE";
+            qDebug() << "SYNC_DATA_DEBUG: SYNC_COMPLETED=" << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+            qDebug() << "SYNC_DATA_DEBUG: SYNC_REASON=" << syncReason;
+            qDebug() << "SUCCESS: Stored server reference time after sync (debug only, no file created):" << newServerTimeFormatted;
+        }
+    }
+                 else {
+                    qDebug() << "ERROR: Could not save server reference time";
+                }
+            }
+        
+        
+    else {
+        qDebug() << "DEBUG: checkAndSyncUsers - No sync needed - device data is current";
+        updateSyncDisplay("Up to Date", localCount, serverUserCount);
+    }
+    
+    // Final status update
+    QList<PERSONS_t> finalUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int finalCount = finalUsers.size();
+    
+    if (needsSync) {
+        QString finalStatus;
+        if (finalCount == serverUserCount) {
+            finalStatus = "Complete";
+            qDebug() << "SUCCESS: checkAndSyncUsers - Perfect sync completed";
+        } else if (finalCount > localCount) {
+            finalStatus = "Improved";
+        } else {
+            finalStatus = "partial";
+        }
+        updateSyncDisplay(finalStatus, finalCount, serverUserCount);
+    }
+    
+    qDebug() << "DEBUG: checkAndSyncUsers - Sync check completed with corrected logic";
+}
+
+QDateTime ConnHttpServerThread::getDeviceLastModifiedTime()
+{
+    qDebug() << "DEBUG: getDeviceLastModifiedTime - Getting DEVICE's actual last modified time";
+    
+    // Get all local users from device database
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    if (localUsers.isEmpty()) {
+        qDebug() << "DEBUG: getDeviceLastModifiedTime - No local users found on device";
+        return QDateTime(); // Return invalid datetime if no users
+    }
+    
+    // Find the most recent created/modified time from device's actual user records
+    QDateTime mostRecentDeviceTime;
+    QString mostRecentUserName = "";
+    
+    for (const PERSONS_t& person : localUsers) {
+        QDateTime userCreatedTime;
+        
+        // Try different time format parsing for device records
+        userCreatedTime = QDateTime::fromString(person.createtime, "yyyy/MM/dd HH:mm:ss");
+        
+        if (!userCreatedTime.isValid()) {
+            userCreatedTime = QDateTime::fromString(person.createtime, "yyyyMMddHHmmss");
+        }
+        
+        if (!userCreatedTime.isValid()) {
+            userCreatedTime = QDateTime::fromString(person.createtime, "yyyy-MM-dd HH:mm:ss");
+        }
+        
+        if (!userCreatedTime.isValid()) {
+            qDebug() << "DEBUG: getDeviceLastModifiedTime - Could not parse time for user:" 
+                     << person.name << ", createtime:" << person.createtime;
+            continue;
+        }
+        
+        // Track the most recent modification time on this device
+        if (!mostRecentDeviceTime.isValid() || userCreatedTime > mostRecentDeviceTime) {
+            mostRecentDeviceTime = userCreatedTime;
+            mostRecentUserName = person.name;
         }
     }
     
-    if (!hasCount) {
-        qDebug() << "ERROR: checkAndSyncUsers - No user count found in heartbeat response, skipping sync";
+    if (mostRecentDeviceTime.isValid()) {
+        qDebug() << "SUCCESS: getDeviceLastModifiedTime - Device's most recent modification time:" 
+                 << mostRecentDeviceTime.toString("yyyy-MM-dd hh:mm:ss");
+        qDebug() << "  Most recent user:" << mostRecentUserName;
+        qDebug() << "  Source: DEVICE LOCAL RECORDS (not stored server time)";
+    } else {
+        qDebug() << "WARNING: getDeviceLastModifiedTime - No valid times found in device records";
+    }
+    
+    return mostRecentDeviceTime;
+}
+
+void ConnHttpServerThread::performFullSync(int serverCount)
+{
+    Q_D(ConnHttpServerThread);
+    
+    qDebug() << "DEBUG: performFullSync - Starting INCREMENTAL sync with target server count:" << serverCount;
+    
+    // === SAME MUTEX LOGIC AS WORKING VERSION ===
+    if (!d->syncMutex.tryLock()) {
+        qDebug() << "WARNING: performFullSync - Another sync in progress, skipping";
+        updateSyncDisplay("Sync In Progress", 0, 0);
         return;
     }
     
-    // Get local user count
+    d->syncInProgress = true;
+    
+    // Get current local count for display
+    QList<PERSONS_t> currentLocalUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int currentLocalCount = getValidUserCount(currentLocalUsers);
+    
+    qDebug() << "DEBUG: performFullSync - Starting with local count:" << currentLocalCount << "target:" << serverCount;
+    
+	qDebug() << "[SYNC_TRIGGER] getServerUserList() called due to lastModified mismatch or count mismatch";
+
+    
+    // Step 2: Get server user list (same as working version)
+    updateSyncDisplay("Getting Modified Server List", currentLocalCount, serverCount);
+    QMap<QString, QString> serverUsers = getServerUserList();
+    if (serverUsers.isEmpty()) {
+        qDebug() << "ERROR: performFullSync - Failed to get server user list or list is empty";
+        updateSyncDisplay("Failed", currentLocalCount, serverCount);
+        d->syncInProgress = false;
+        d->syncMutex.unlock();
+        return;
+    }
+    
+    // Use actual parsed count (same as working version)
+    int actualServerCount = serverUsers.size();
+    qDebug() << "DEBUG: performFullSync - Found" << actualServerCount << "users (target was" << serverCount << ")";
+    
+    int targetCount = qMax(actualServerCount, serverCount);
+    
+    updateSyncDisplay("Processing Modified Users", currentLocalCount, targetCount);
+    
+    // Step 3: Build comprehensive local user map (same as working version)
     QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
-    int localUserCount = localUsers.size();
+    QMap<QString, QString> localUserMap;
+    QSet<QString> localEmployeeIds;
     
-    qDebug() << "DEBUG: checkAndSyncUsers - User counts - Server: " << serverUserCount << ", Local: " << localUserCount;
+    for (const PERSONS_t& person : localUsers) {
+        if (!person.idcard.isEmpty() && !person.name.isEmpty()) {
+            localUserMap[person.idcard] = person.createtime;
+            localEmployeeIds.insert(person.idcard);
+        }
+    }
     
-    // Check if we need to sync
-    if (serverUserCount > localUserCount) {
-        qDebug() << "DEBUG: checkAndSyncUsers - Detected more users on server, starting sync";
-        syncMissingUsers();
+    qDebug() << "DEBUG: performFullSync - Local user map has" << localUserMap.size() << "valid users";
+
+    // === STEP 4: Filter users based on sync type ===
+    QStringList usersToProcess;
+    QDateTime lastSyncDateTime;
+
+        // Handle extra users (same logic as working version)
+        QSet<QString> serverEmployeeIds = QSet<QString>::fromList(serverUsers.keys());
+        QSet<QString> extraUsers = localEmployeeIds - serverEmployeeIds;
+        
+        if (!extraUsers.isEmpty()) {
+            updateSyncDisplay("Removing Extra Users", currentLocalCount, targetCount);
+            
+            int removedCount = 0;
+            for (const QString& employeeId : extraUsers) {
+                QString uuid = findUuidByEmployeeId(employeeId);
+                if (!uuid.isEmpty()) {
+                    bool deleted = RegisteredFacesDB::GetInstance()->DelPersonByPersionUUIDFromDBAndRAM(uuid);
+                    if (deleted) {
+                        removedCount++;
+                        qDebug() << "DEBUG: performFullSync - Removed extra user[" << removedCount << "]:" << employeeId;
+                    }
+                }
+            }
+            
+            qDebug() << "DEBUG: performFullSync - Removed" << removedCount << "extra users";
+            
+            // Update count after deletions
+            QList<PERSONS_t> afterDeleteUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+            currentLocalCount = getValidUserCount(afterDeleteUsers);
+            qDebug() << "DEBUG: performFullSync - After deletions, local count:" << currentLocalCount;
+        }
+
+		for (const QString& employeeId : serverEmployeeIds) {
+    if (!localUserMap.contains(employeeId)) {
+        // New user
+        usersToProcess << employeeId;
     } else {
-        qDebug() << "DEBUG: checkAndSyncUsers - User counts match or local has more, no sync needed";
+        // Compare timestamps
+        QString localTimeStr = localUserMap[employeeId];
+        QDateTime localTime = QDateTime::fromString(localTimeStr, "yyyy/MM/dd hh:mm:ss");
+        QDateTime serverTimeIST = convertUTCToIST(serverUsers[employeeId]);
+
+        if (serverTimeIST.isValid() && localTime.isValid() && serverTimeIST > localTime) {
+            usersToProcess << employeeId; // Needs update
+        }
+    }
+}	
+    
+
+    // Step 5: Process identified users (same processing logic as working version)
+    int totalToProcess = usersToProcess.size();
+    int processedCount = 0;
+    int successCount = 0;
+    int failCount = 0;
+    int addCount = 0;
+    int updateCount = 0;
+    int skipCount = 0;
+    
+    if (totalToProcess == 0) {
+        qDebug() << "DEBUG: performFullSync - No users to process - all up to date";
+        updateSyncDisplay("Up to Date", currentLocalCount, targetCount);
+        
+        // Update last sync time even if no users processed
+        updateLastSyncTime();
+        
+        d->syncInProgress = false;
+        d->syncMutex.unlock();
+        return;
+    }
+	
+    
+    updateSyncDisplay("Syncing Modified Users", currentLocalCount, targetCount);
+    
+    qDebug() << "DEBUG: performFullSync - Starting to process" << totalToProcess << "users individually";
+    
+    // Process each identified user (same individual processing as working version)
+    for (const QString& employeeId : usersToProcess) {
+        QString serverTimeUTC = serverUsers[employeeId];
+        
+        processedCount++;
+        
+        qDebug() << "DEBUG: performFullSync - Processing user" << processedCount << "/" << totalToProcess << ":" << employeeId;
+        
+        // Show progress every 5 users (same as working version)
+        if (processedCount % 5 == 0) {
+            QList<PERSONS_t> progressUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+            int progressLocalCount = getValidUserCount(progressUsers);
+            
+            QString progressStatus = QString("%1 %2/%3 (%4%)")
+                .arg(processedCount)
+                .arg(totalToProcess)
+                .arg((processedCount * 100) / totalToProcess);
+            
+            updateSyncDisplay(progressStatus, progressLocalCount, targetCount);
+            QApplication::processEvents(); // Allow UI updates
+        }
+        
+        // Determine if user needs sync (same logic as working version)
+        bool needsSync = false;
+        bool isNewUser = false;
+        
+        if (!localUserMap.contains(employeeId)) {
+            needsSync = true;
+            isNewUser = true;
+            qDebug() << "DEBUG: User" << employeeId << "is NEW - needs to be added";
+        } else {
+            // Check if server version is newer (same as working version)
+            QString localTimeStr = localUserMap[employeeId];
+            QDateTime localTime = QDateTime::fromString(localTimeStr, "yyyy/MM/dd hh:mm:ss");
+            QDateTime serverTimeIST = convertUTCToIST(serverTimeUTC);
+            
+            if (serverTimeIST.isValid() && localTime.isValid() && serverTimeIST > localTime) {
+                needsSync = true;
+                qDebug() << "DEBUG: User" << employeeId << "needs UPDATE - server is newer";
+            } else {
+                skipCount++;
+                qDebug() << "DEBUG: User" << employeeId << "is UP-TO-DATE - skipping";
+            }
+        }
+        
+        // Sync the user if needed (same sync logic as working version)
+        if (needsSync) {
+            qDebug() << "DEBUG: performFullSync - Fetching data for user:" << employeeId;
+            
+            bool syncSuccess = false;
+            int retryCount = 0;
+            int maxRetries = (isNewUser) ? 3 : 1;
+            
+            while (!syncSuccess && retryCount < maxRetries) {
+                retryCount++;
+                qDebug() << "DEBUG: performFullSync - Attempt" << retryCount << "for user:" << employeeId;
+                
+                syncSuccess = fetchAndAddUser(employeeId, serverTimeUTC);
+                
+                if (!syncSuccess && retryCount < maxRetries) {
+                    qDebug() << "WARNING: performFullSync - Retry" << retryCount << "failed for user:" << employeeId;
+                    QThread::msleep(1000);
+                }
+            }
+            
+            if (syncSuccess) {
+                successCount++;
+                if (isNewUser) {
+                    addCount++;
+                    qDebug() << "SUCCESS: Added new user[" << addCount << "]:" << employeeId;
+                } else {
+                    updateCount++;
+                    qDebug() << "SUCCESS: Updated user[" << updateCount << "]:" << employeeId;
+                }
+                localUserMap[employeeId] = serverTimeUTC;
+            } else {
+                failCount++;
+                qDebug() << "ERROR: Failed to sync user[" << failCount << "]:" << employeeId;
+                
+                // Same fallback logic as working version for critical users
+                if (isNewUser) {
+                    qDebug() << "CRITICAL: Attempting fallback storage for new user:" << employeeId;
+                    
+                    QString uuid = QUuid::createUuid().toString();
+                    uuid = uuid.replace("{", "").replace("}", "");
+                    
+                    bool fallbackSuccess = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(
+                        uuid,
+                        "User_" + employeeId,
+                        employeeId,
+                        "000000",
+                        "Unknown",
+                        "",
+                        "00:00,23:59,1,1,1,1,1,1,1",
+                        QByteArray(),
+						"",
+						"",
+						"",
+						"",
+						"",
+						"",
+						0,
+						0
+                    );
+                    
+                    if (fallbackSuccess) {
+                        qDebug() << "SUCCESS: Fallback storage worked for user:" << employeeId;
+                        successCount++;
+                        addCount++;
+                        failCount--;
+                        localUserMap[employeeId] = serverTimeUTC;
+                    }
+                }
+            }
+        }
+        
+        // Small delay (same as working version)
+        if (processedCount % 3 == 0) {
+            QThread::msleep(100);
+        }
+        
+        // Check for interruption (same as working version)
+        if (QThread::currentThread()->isInterruptionRequested()) {
+            qDebug() << "DEBUG: performFullSync - Interruption requested at user" << processedCount;
+            break;
+        }
+    }
+    
+    // === STEP 6: Update last sync time after successful sync ===
+    if (successCount > 0 || totalToProcess == 0) {
+        updateLastSyncTime();
+        qDebug() << "DEBUG: performFullSync - Updated last sync time";
+    }
+    
+    // Get final counts (same as working version)
+    QList<PERSONS_t> finalLocalUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int finalLocalCount = getValidUserCount(finalLocalUsers);
+    
+    qDebug() << "DEBUG: performFullSync - INCREMENTAL SYNC SUMMARY:";
+    qDebug() << "  Total users processed:" << processedCount << "/" << totalToProcess;
+    qDebug() << "  New users added:" << addCount;
+    qDebug() << "  Existing users updated:" << updateCount;
+    qDebug() << "  Users skipped (up-to-date):" << skipCount;
+    qDebug() << "  Users failed:" << failCount;
+    qDebug() << "  Final local count:" << finalLocalCount;
+    qDebug() << "  Target server count:" << targetCount;
+    
+    
+    // === SAME MUTEX CLEANUP AS WORKING VERSION ===
+    d->syncInProgress = false;
+    d->syncMutex.unlock();
+    
+    // Don't update final status here - let calling function handle it
+}
+
+bool ConnHttpServerThread::determineIfFirstTimeSync()
+{
+    // *** CHANGED: Replace file check with debug message ***
+    QString lastSyncFile = "/mnt/user/sync_data/last_sync_time.txt";
+    qDebug() << "SYNC_DATA_DEBUG: Would check file existence:" << lastSyncFile;
+    qDebug() << "DEBUG: No last sync time file found (debug mode) - this is first time sync";
+    
+    // Check if we have any local users (this logic remains unchanged)
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int validUserCount = getValidUserCount(localUsers);
+    
+    if (validUserCount == 0) {
+        qDebug() << "DEBUG: No local users found - treating as first time sync";
+        return true;
+    }
+    
+    // === NEW: Check for tenant change OR significant count mismatch ===
+    QString lastResponse = getLastHeartbeatResponse();
+    if (!lastResponse.isEmpty()) {
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (reader.parse(lastResponse.toStdString(), responseJson)) {
+            
+            // === 1. CHECK FOR TENANT CHANGE ===
+            bool tenantChanged = false;
+            QString currentTenantId = "";
+            QString storedTenantId = ReadConfig::GetInstance()->getHeartbeat_TenantId();
+            
+            if (responseJson.isMember("tenantId") && !responseJson["tenantId"].isNull()) {
+                currentTenantId = QString::fromStdString(responseJson["tenantId"].asString());
+                
+                qDebug() << "TENANT_CHANGE_DEBUG: Tenant comparison:";
+                qDebug() << "TENANT_CHANGE_DEBUG:   Current tenant ID:" << currentTenantId;
+                qDebug() << "TENANT_CHANGE_DEBUG:   Stored tenant ID:" << storedTenantId;
+                
+                if (!storedTenantId.isEmpty() && currentTenantId != storedTenantId) {
+                    tenantChanged = true;
+                    qDebug() << "TENANT_CHANGE_DEBUG: *** TENANT CHANGE DETECTED ***";
+                    qDebug() << "TENANT_CHANGE_DEBUG: Changed from" << storedTenantId << "to" << currentTenantId;
+                } else if (storedTenantId.isEmpty()) {
+                    qDebug() << "TENANT_CHANGE_DEBUG: First time tenant ID detected:" << currentTenantId;
+                    tenantChanged = true; // Treat first-time tenant as change
+                } else {
+                    qDebug() << "TENANT_CHANGE_DEBUG: Same tenant - no change detected";
+                }
+            }
+            
+            // === 2. CHECK FOR SIGNIFICANT COUNT MISMATCH ===
+            bool significantCountMismatch = false;
+            if (responseJson.isMember("TotalUserCount")) {
+                int serverCount = atoi(responseJson["TotalUserCount"].asString().c_str());
+                int localCount = validUserCount;
+                
+                // Calculate the percentage difference
+                float countDifferencePercent = 0;
+                if (localCount > 0) {
+                    countDifferencePercent = abs(serverCount - localCount) * 100.0f / localCount;
+                }
+                
+                qDebug() << "TENANT_CHANGE_DEBUG: Count comparison for sync type decision:";
+                qDebug() << "TENANT_CHANGE_DEBUG:   Server count:" << serverCount;
+                qDebug() << "TENANT_CHANGE_DEBUG:   Local count:" << localCount;
+                qDebug() << "TENANT_CHANGE_DEBUG:   Difference:" << abs(serverCount - localCount);
+                qDebug() << "TENANT_CHANGE_DEBUG:   Difference percentage:" << countDifferencePercent << "%";
+                
+                // If there's a significant count mismatch (>30%), treat as requiring full sync
+                if (countDifferencePercent > 30.0f) {
+                    significantCountMismatch = true;
+                    qDebug() << "TENANT_CHANGE_DEBUG: *** SIGNIFICANT COUNT MISMATCH DETECTED ***";
+                    qDebug() << "TENANT_CHANGE_DEBUG: Threshold: 30%, Actual:" << countDifferencePercent << "%";
+                }
+            }
+            
+            // === 3. FORCE FIRST TIME SYNC IF EITHER CONDITION IS TRUE ===
+            if (tenantChanged || significantCountMismatch) {
+                if (tenantChanged && significantCountMismatch) {
+                    qDebug() << "TENANT_CHANGE_DEBUG: *** BOTH TENANT CHANGE AND COUNT MISMATCH DETECTED ***";
+                    qDebug() << "TENANT_CHANGE_DEBUG: This confirms a tenant switch - forcing FIRST TIME SYNC";
+                } else if (tenantChanged) {
+                    qDebug() << "TENANT_CHANGE_DEBUG: *** TENANT CHANGE DETECTED - forcing FIRST TIME SYNC ***";
+                } else if (significantCountMismatch) {
+                    qDebug() << "TENANT_CHANGE_DEBUG: *** COUNT MISMATCH DETECTED - forcing FIRST TIME SYNC ***";
+                }
+                
+                // *** CHANGED: Replace file removal with debug messages ***
+                qDebug() << "SYNC_DATA_DEBUG: Would remove file:" << lastSyncFile;
+                qDebug() << "SYNC_DATA_DEBUG: Would remove file: /mnt/user/sync_data/server_lastmodified.txt";
+                qDebug() << "SYNC_DATA_DEBUG: Would remove file: /mnt/user/sync_data/server_reference_time.txt";
+                qDebug() << "TENANT_CHANGE_DEBUG: Cleared last sync time file to force full sync (debug only)";
+                qDebug() << "TENANT_CHANGE_DEBUG: Cleared server time references for fresh start (debug only)";
+                
+                return true;
+            } else {
+                qDebug() << "FIRST_TIME_SYNC_DEBUG: No tenant change or significant count mismatch";
+                qDebug() << "FIRST_TIME_SYNC_DEBUG: Checking other first-time sync conditions...";
+            }
+        } else {
+            qDebug() << "FIRST_TIME_SYNC_DEBUG: Could not parse heartbeat response";
+        }
+    } else {
+        qDebug() << "FIRST_TIME_SYNC_DEBUG: No heartbeat response available";
+    }
+    
+    // === EXISTING CONDITION: Check if last sync was more than 24 hours ago ===
+    QString lastSyncTime = getLastSyncTime(); // This will return empty in debug mode
+    if (!lastSyncTime.isEmpty()) {
+        QDateTime lastSync = QDateTime::fromString(lastSyncTime, "yyyy/MM/dd HH:mm:ss");
+        if (lastSync.isValid()) {
+            qint64 hoursSinceLastSync = lastSync.secsTo(QDateTime::currentDateTime()) / 3600;
+            qDebug() << "FIRST_TIME_SYNC_DEBUG: Hours since last sync:" << hoursSinceLastSync;
+            
+            if (hoursSinceLastSync > 24) {
+                qDebug() << "FIRST_TIME_SYNC_DEBUG: Last sync was" << hoursSinceLastSync << "hours ago - FIRST TIME SYNC";
+                return true;
+            }
+        } else {
+            qDebug() << "FIRST_TIME_SYNC_DEBUG: Invalid last sync time format - FIRST TIME SYNC";
+            return true;
+        }
+    } else {
+        qDebug() << "FIRST_TIME_SYNC_DEBUG: No last sync time found (debug mode) - INCREMENTAL SYNC";
+        // In debug mode, since we don't create files, default to incremental sync
+        return false;
+    }
+    
+    qDebug() << "FIRST_TIME_SYNC_DEBUG: All conditions checked - INCREMENTAL SYNC";
+    qDebug() << "FIRST_TIME_SYNC_DEBUG: Found last sync time and local users, no tenant change, no significant count mismatch";
+    return false;
+}
+
+QString ConnHttpServerThread::getLastSyncTime()
+{
+    QString lastSyncFile = "/mnt/user/sync_data/last_sync_time.txt";
+    
+    // *** CHANGED: Replace file read with debug message and return empty ***
+    qDebug() << "SYNC_DATA_DEBUG: Would read from file:" << lastSyncFile;
+    qDebug() << "DEBUG: Could not read last sync time file (debug mode - no file created)";
+    return QString(); // Return empty since no file exists
+}
+
+void ConnHttpServerThread::updateLastSyncTime()
+{
+    QString lastSyncFile = "/mnt/user/sync_data/last_sync_time.txt";
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
+    
+    // *** CHANGED: Replace directory creation and file write with debug message ***
+    qDebug() << "SYNC_DATA_DEBUG: Would write to file:" << lastSyncFile;
+    qDebug() << "SYNC_DATA_DEBUG: Content would be:" << currentTime;
+    qDebug() << "SYNC_DATA_DEBUG: SYNC_TYPE=INCREMENTAL";
+    qDebug() << "SYNC_DATA_DEBUG: DEVICE_ID=" << myHelper::getCpuSerial();
+    qDebug() << "DEBUG: Updated last sync time to (debug only, no file created):" << currentTime;
+}
+
+int ConnHttpServerThread::getValidUserCount(const QList<PERSONS_t>& users)
+{
+    int validCount = 0;
+    for (const PERSONS_t& person : users) {
+        if (!person.idcard.isEmpty() && !person.name.isEmpty()) {
+            validCount++;
+        }
+    }
+    return validCount;
+}
+
+// ADD this new function
+bool ConnHttpServerThread::shouldSyncUser(const QString& employeeId, 
+                                         const QString& serverTimeUTC,
+                                         const QMap<QString, QString>& localUserMap)
+{
+    if (!localUserMap.contains(employeeId)) {
+        // User doesn't exist locally - needs sync
+        qDebug() << "DEBUG: shouldSyncUser - New user:" << employeeId;
+        return true;
+    }
+    
+    // User exists - check if server version is newer
+    QString localTimeStr = localUserMap[employeeId];
+    QDateTime localTime = QDateTime::fromString(localTimeStr, "yyyy/MM/dd hh:mm:ss");
+    QDateTime serverTimeIST = convertUTCToIST(serverTimeUTC);
+    
+    if (serverTimeIST.isValid() && localTime.isValid() && serverTimeIST > localTime) {
+        qDebug() << "DEBUG: shouldSyncUser - User needs update:" << employeeId 
+                 << "Server:" << serverTimeIST.toString("yyyy/MM/dd HH:mm:ss")
+                 << "Local:" << localTime.toString("yyyy/MM/dd HH:mm:ss");
+        return true;
+    }
+    
+    // User is up to date
+    return false;
+}
+
+// ADD this new function
+void ConnHttpServerThread::processQueueBatch(QQueue<QString>& queue, int& successCount, int& failCount)
+{
+    int batchProcessed = 0;
+    
+    qDebug() << "DEBUG: processQueueBatch - Processing batch of up to" << SYNC_BATCH_SIZE 
+             << "users from queue of" << queue.size();
+    
+    while (!queue.isEmpty() && batchProcessed < SYNC_BATCH_SIZE) {
+        QString employeeId = queue.dequeue();
+        
+        qDebug() << "DEBUG: processQueueBatch - Processing user" << (batchProcessed + 1) 
+                 << ":" << employeeId;
+        
+        if (fetchAndAddUser(employeeId)) {
+            successCount++;
+            qDebug() << "DEBUG: processQueueBatch - Successfully processed:" << employeeId;
+        } else {
+            failCount++;
+            qDebug() << "ERROR: processQueueBatch - Failed to process:" << employeeId;
+        }
+        
+        batchProcessed++;
+        
+        // Small delay between individual users in batch
+        if (batchProcessed < SYNC_BATCH_SIZE && !queue.isEmpty()) {
+            QThread::msleep(50);
+        }
+    }
+    
+    qDebug() << "DEBUG: processQueueBatch - Batch completed. Processed:" << batchProcessed 
+             << "Success total:" << successCount << "Fail total:" << failCount;
+}
+
+// ADD this new function
+void ConnHttpServerThread::updateSyncProgress(int processed, int total, int queued)
+{
+    QString progressStatus;
+    if (total > 0) {
+        int percentage = (processed * 100) / total;
+        progressStatus = QString("Processing %1% (%2/%3) Q:%4")
+            .arg(percentage)
+            .arg(processed)
+            .arg(total)
+            .arg(queued);
+    } else {
+        progressStatus = QString("Processing (%1) Q:%2").arg(processed).arg(queued);
+    }
+    
+    QList<PERSONS_t> currentUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    updateSyncDisplay(progressStatus, currentUsers.size(), total);
+    
+    qDebug() << "DEBUG: updateSyncProgress -" << progressStatus;
+}
+
+// ADD this debugging function (optional)
+void ConnHttpServerThread::debugPrintQueueStatus(const QQueue<QString>& queue, 
+                                                const QString& context)
+{
+    qDebug() << "DEBUG: Queue Status [" << context << "]";
+    qDebug() << "  Queue size:" << queue.size() << "/" << MAX_QUEUE_LENGTH;
+    qDebug() << "  Queue threshold:" << QUEUE_REFILL_THRESHOLD;
+    qDebug() << "  Batch size:" << SYNC_BATCH_SIZE;
+    
+    if (!queue.isEmpty()) {
+        qDebug() << "  Next users in queue:";
+        QQueue<QString> tempQueue = queue; // Copy for debugging
+        for (int i = 0; i < qMin(5, tempQueue.size()); i++) {
+            qDebug() << "    " << (i+1) << ":" << tempQueue.dequeue();
+        }
     }
 }
+
 void ConnHttpServerThread::syncMissingUsers()
 {
     Q_D(ConnHttpServerThread);
-    qDebug() << "DEBUG: syncMissingUsers - Starting user synchronization process";
+    
+    qDebug() << "DEBUG: syncMissingUsers - Checking if sync is already in progress";
+    
+    // Check if sync is in progress (non-blocking check)
+    if (!d->syncMutex.tryLock()) {
+        qDebug() << "WARNING: syncMissingUsers - Full sync in progress, skipping individual user sync";
+        return;
+    }
+    
+    qDebug() << "DEBUG: syncMissingUsers - Starting user synchronization process with mutex protection";
+    
+    try {
+        // Save original URL
+        QString originalUrl = d->mHttpServerUrl;
+        
+        // Get the sync URL from config
+        QString syncUrl = ReadConfig::GetInstance()->getSyncUsersAddress();
+        if (syncUrl.isEmpty()) {
+            qDebug() << "ERROR: syncMissingUsers - Sync URL not configured";
+            d->syncMutex.unlock();
+            return;
+        }
+        
+        // Set URL for this request
+        d->mHttpServerUrl = syncUrl;
+        
+        // Prepare request
+        Json::Value json;
+        std::string timestamp = getTime();
+        std::string password = ReadConfig::GetInstance()->getSyncUsersPassword().toStdString() + timestamp;
+        password = md5sum(password);
+        password = md5sum(password);
+        transform(password.begin(), password.end(), password.begin(), ::tolower);
+        
+        json["msg_type"] = "get_all_person_ids";
+        json["sn"] = d->sn.toStdString().c_str();
+        json["timestamp"] = timestamp.c_str();
+        json["password"] = password.c_str();
+        
+        qDebug() << "DEBUG: syncMissingUsers - Sending request for all user IDs (MUTEX PROTECTED)";
+        
+        // Send request
+        QString response = d->doPostJson(json);
+        
+        // Restore original URL
+        d->mHttpServerUrl = originalUrl;
+        
+        // Process response (rest of the existing logic)
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (!reader.parse(response.toStdString(), responseJson)) {
+            qDebug() << "ERROR: syncMissingUsers - Failed to parse user IDs response";
+            d->syncMutex.unlock();
+            return;
+        }
+    qDebug() << "DEBUG: syncMissingUsers - Successfully parsed JSON response";
+    
+    // Only check for updatedUsers array
+    if (!responseJson.isMember("updatedUsers") || !responseJson["updatedUsers"].isArray()) {
+        qDebug() << "ERROR: syncMissingUsers - No updatedUsers array found in response";
+        return;
+    }
+    
+    // Get all local users for comparison
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    QMap<QString, QDateTime> localUserMapUTC; // Map of ID to UTC modification time
+    QSet<QString> localUserIdSet;
+    
+    for (const PERSONS_t& person : localUsers) {
+        if (!person.idcard.isEmpty()) {
+            // Parse local time and convert to UTC
+            QDateTime createTimeLocal = QDateTime::fromString(person.createtime, "yyyy/MM/dd HH:mm:ss");
+            if (!createTimeLocal.isValid()) {
+                createTimeLocal = QDateTime::fromString(person.createtime, "yyyyMMddHHmmss");
+            }
+            
+            // Convert to UTC for comparison using the private function
+            QDateTime createTimeUTC = d->convertLocalTimeToUTC(createTimeLocal);
+            
+            localUserMapUTC[person.idcard] = createTimeUTC;
+            localUserIdSet.insert(person.idcard);
+            
+            qDebug() << "DEBUG: syncMissingUsers - Local user: " << person.idcard 
+                     << " Local Time: " << (createTimeLocal.isValid() ? createTimeLocal.toString("yyyy/MM/dd HH:mm:ss") : "Invalid")
+                     << " UTC Time: " << (createTimeUTC.isValid() ? createTimeUTC.toString("yyyy/MM/dd HH:mm:ss") : "Invalid");
+        }
+    }
+    
+    // Process updatedUsers array
+    Json::Value updatedUsers = responseJson["updatedUsers"];
+    qDebug() << "DEBUG: syncMissingUsers - Processing updatedUsers array with " << updatedUsers.size() << " entries";
+    
+    // Also track all server IDs to identify users that need to be deleted
+    QSet<QString> serverUserIds;
+    
+    for (Json::Value::ArrayIndex i = 0; i < updatedUsers.size(); i++) {
+        QString updateEntry = QString::fromStdString(updatedUsers[i].asString());
+        
+        // Parse entry to get ID and timestamp
+        QString userID;
+        QString serverTimeUTC;
+        
+        int hyphenPos = updateEntry.indexOf('-');
+        if (hyphenPos > 0) {
+            // Has hyphen - extract parts
+            userID = updateEntry.left(hyphenPos);
+            QString timestampStr = updateEntry.mid(hyphenPos + 1).trimmed();
+            
+            if (timestampStr.isEmpty()) {
+                // Empty timestamp - treat as needs sync (use current time)
+                serverTimeUTC = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
+                qDebug() << "DEBUG: syncMissingUsers - Entry with empty timestamp, forcing sync: " << userID;
+            } else {
+                // Parse timestamp
+                serverTimeUTC = timestampStr;
+                qDebug() << "DEBUG: syncMissingUsers - Entry with timestamp: " << userID << "at" << serverTimeUTC;
+            }
+        } else {
+            // No hyphen - treat entire entry as userID and force sync
+            userID = updateEntry.trimmed();
+            if (!userID.isEmpty()) {
+                // Use current time to force sync of users without timestamps
+                serverTimeUTC = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
+                qDebug() << "DEBUG: syncMissingUsers - Entry without timestamp, forcing sync: " << userID;
+            } else {
+                qDebug() << "ERROR: syncMissingUsers - Empty user entry at index: " << i;
+                continue;
+            }
+        }
+        
+        // Skip empty userIDs
+        if (userID.isEmpty()) {
+            qDebug() << "ERROR: syncMissingUsers - Empty userID for entry: " << updateEntry;
+            continue;
+        }
+        
+        serverUserIds.insert(userID);
+        
+        qDebug() << "DEBUG: syncMissingUsers - Server user: " << userID 
+                 << " UTC Time: " << serverTimeUTC;
+        
+        // Compare UTC times directly
+        if (!localUserMapUTC.contains(userID) || 
+            !localUserMapUTC[userID].isValid() || 
+            QDateTime::fromString(serverTimeUTC, "yyyy/MM/dd HH:mm:ss") > localUserMapUTC[userID]) {
+            
+            qDebug() << "DEBUG: syncMissingUsers - User " << userID << " needs update (UTC comparison)";
+            
+            // *** MODIFIED: Pass server time to fetchAndAddUser ***
+            fetchAndAddUser(userID, serverTimeUTC);
+        } else {
+            qDebug() << "DEBUG: syncMissingUsers - User " << userID << " is up to date";
+        }
+    }
+    
+    // For count-based sync, also check for users that exist locally but not on the server
+    QSet<QString> extraUserIds = localUserIdSet - serverUserIds;
+    if (!extraUserIds.isEmpty()) {
+        qDebug() << "DEBUG: syncMissingUsers - Found " << extraUserIds.size() << " extra users locally, removing them";
+        
+        for (const QString& userId : extraUserIds) {
+            QString uuid = findUuidByEmployeeId(userId);
+            if (!uuid.isEmpty()) {
+                RegisteredFacesDB::GetInstance()->DelPersonByPersionUUIDFromDBAndRAM(uuid);
+                qDebug() << "DEBUG: syncMissingUsers - Deleted user:" << userId;
+            }
+        }
+    }
+    
+    qDebug() << "DEBUG: syncMissingUsers - User synchronization completed with mutex protection";
+        
+    } catch (...) {
+        qDebug() << "ERROR: syncMissingUsers - Exception occurred, releasing mutex";
+    }
+    
+    // Release mutex
+    d->syncMutex.unlock();
+    qDebug() << "DEBUG: syncMissingUsers - Released mutex";
+}
+
+bool ConnHttpServerThread::isSyncInProgress() const
+{
+    Q_D(const ConnHttpServerThread);
+    return d->syncInProgress;
+}
+
+// New function to handle removal of extra users
+void ConnHttpServerThread::removeExtraUsers()
+{
+    Q_D(ConnHttpServerThread);
+    qDebug() << "DEBUG: removeExtraUsers - Starting process to remove extra users";
     
     // Save original URL
     QString originalUrl = d->mHttpServerUrl;
-    qDebug() << "DEBUG: syncMissingUsers - Original URL: " << originalUrl;
+    qDebug() << "DEBUG: removeExtraUsers - Original URL: " << originalUrl;
     
     // Get the sync URL from config
     QString syncUrl = ReadConfig::GetInstance()->getSyncUsersAddress();
     if (syncUrl.isEmpty()) {
-        qDebug() << "ERROR: syncMissingUsers - Sync URL not configured";
+        qDebug() << "ERROR: removeExtraUsers - Sync URL not configured";
         return;
     }
-    qDebug() << "DEBUG: syncMissingUsers - Using sync URL: " << syncUrl;
+    qDebug() << "DEBUG: removeExtraUsers - Using sync URL: " << syncUrl;
     
     // Set URL for this request
     d->mHttpServerUrl = syncUrl;
     
-    // Prepare request
+    // Prepare request to get all user IDs from server
     Json::Value json;
     std::string timestamp = getTime();
     std::string password = ReadConfig::GetInstance()->getSyncUsersPassword().toStdString() + timestamp;
@@ -3715,37 +5276,37 @@ void ConnHttpServerThread::syncMissingUsers()
     json["timestamp"] = timestamp.c_str();
     json["password"] = password.c_str();
     
-    qDebug() << "DEBUG: syncMissingUsers - Sending request for all user IDs";
+    qDebug() << "DEBUG: removeExtraUsers - Sending request for all user IDs";
     
     // Send request
     QString response = d->doPostJson(json);
-    qDebug() << "DEBUG: syncMissingUsers - Received response, length: " << response.length();
+    qDebug() << "DEBUG: removeExtraUsers - Received response, length: " << response.length();
     
     // Restore original URL
     d->mHttpServerUrl = originalUrl;
-    qDebug() << "DEBUG: syncMissingUsers - Restored original URL";
+    qDebug() << "DEBUG: removeExtraUsers - Restored original URL";
     
     // Process response
     Json::Reader reader;
     Json::Value responseJson;
     if (!reader.parse(response.toStdString(), responseJson)) {
-        qDebug() << "ERROR: syncMissingUsers - Failed to parse user IDs response";
+        qDebug() << "ERROR: removeExtraUsers - Failed to parse user IDs response";
         return;
     }
-    qDebug() << "DEBUG: syncMissingUsers - Successfully parsed JSON response";
+    qDebug() << "DEBUG: removeExtraUsers - Successfully parsed JSON response";
     
     // Extract user ID card numbers from the All_UserID array
-    QStringList serverUserIdCards;
-    if (responseJson.isMember("All_UserID") && responseJson["All_UserID"].isArray()) {
-        Json::Value idCards = responseJson["All_UserID"];
-        qDebug() << "DEBUG: syncMissingUsers - Processing All_UserID array with " << idCards.size() << " entries";
+    QSet<QString> serverUserIdCards;
+    if (responseJson.isMember("updatedUsers") && responseJson["updatedUsers"].isArray()) {
+        Json::Value idCards = responseJson["updatedUsers"];
+        qDebug() << "DEBUG: removeExtraUsers - Processing updatedUsers array with " << idCards.size() << " entries";
         for (Json::Value::ArrayIndex i = 0; i < idCards.size(); i++) {
             QString idCard = QString::fromStdString(idCards[i].asString());
-            serverUserIdCards.append(idCard);
-            qDebug() << "DEBUG: syncMissingUsers - Added ID card: " << idCard;
+            serverUserIdCards.insert(idCard);
+            qDebug() << "DEBUG: removeExtraUsers - Added ID card to set: " << idCard;
         }
     } else {
-        qDebug() << "ERROR: syncMissingUsers - No All_UserID array found in response";
+        qDebug() << "ERROR: removeExtraUsers - No updatedUsers array found in response";
         // Dump response keys for debugging
         qDebug() << "DEBUG: Available keys in response:";
         for (const auto& key : responseJson.getMemberNames()) {
@@ -3754,57 +5315,442 @@ void ConnHttpServerThread::syncMissingUsers()
         return;
     }
     
-    // Get local user ID cards
+    // Get local users
     QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
-    QStringList localUserIdCards;
     
-    qDebug() << "DEBUG: syncMissingUsers - Processing " << localUsers.size() << " local users";
+    // Find and remove extra users that exist locally but not on server
+    int removedCount = 0;
+    qDebug() << "DEBUG: removeExtraUsers - Looking for extra users among " << localUsers.size() << " local users";
+    
     for (const PERSONS_t& person : localUsers) {
-        localUserIdCards.append(person.idcard);
-        qDebug() << "DEBUG: syncMissingUsers - Local user: " << person.name << ", ID: " << person.idcard;
-    }
-    
-    // Find missing users
-    QStringList missingUserIdCards;
-    for (const QString& idCard : serverUserIdCards) {
-        if (!localUserIdCards.contains(idCard)) {
-            missingUserIdCards.append(idCard);
-            qDebug() << "DEBUG: syncMissingUsers - Found missing user with ID: " << idCard;
+        // Skip users without ID cards
+        if (person.idcard.isEmpty()) {
+            qDebug() << "DEBUG: removeExtraUsers - Skipping user without ID card: " << person.name;
+            continue;
+        }
+        
+        // If the local user's ID card is not in the server list, delete it
+        if (!serverUserIdCards.contains(person.idcard)) {
+            qDebug() << "DEBUG: removeExtraUsers - Found extra user to remove: " << person.name << ", ID: " << person.idcard;
+            
+            // Delete the user from local database
+            bool deleteResult = RegisteredFacesDB::GetInstance()->DelPersonByPersionUUIDFromDBAndRAM(person.uuid);
+            if (deleteResult) {
+                qDebug() << "DEBUG: removeExtraUsers - Successfully removed user: " << person.name;
+                removedCount++;
+            } else {
+                qDebug() << "ERROR: removeExtraUsers - Failed to remove user: " << person.name;
+            }
         }
     }
     
-    qDebug() << "DEBUG: syncMissingUsers - Found " << missingUserIdCards.size() << " users missing from local database";
-    
-    // Fetch and add each missing user
-    for (const QString& idCard : missingUserIdCards) {
-        qDebug() << "DEBUG: syncMissingUsers - Fetching details for user with ID: " << idCard;
-        fetchAndAddUser(idCard);
-    }
-    
-    qDebug() << "DEBUG: syncMissingUsers - User synchronization completed";
+    qDebug() << "DEBUG: removeExtraUsers - Completed removal process. Removed " << removedCount << " extra users";
 }
 
-void ConnHttpServerThread::fetchAndAddUser(const QString& idCard)
+/*void ConnHttpServerThread::checkLastModifiedTime(const QString& heartbeatResponse)
+{
+    qDebug() << "DEBUG: checkLastModifiedTime - Starting time-based sync check";
+    
+    ReadConfig readConfig;
+    if (!readConfig.getSyncEnabled()) {
+        LogD("%s %s[%d] Sync is disabled. Skipping last modified time check.\n", __FILE__, __FUNCTION__, __LINE__);
+        return; // Do nothing if sync is disabled
+    }
+
+    LogD("%s %s[%d] Sync is enabled. Checking last modified time.\n", __FILE__, __FUNCTION__, __LINE__);
+    
+    // Parse the heartbeat response
+    Json::Reader reader;
+    Json::Value responseJson;
+    
+    if (!reader.parse(heartbeatResponse.toStdString(), responseJson)) {
+        qDebug() << "ERROR: checkLastModifiedTime - Failed to parse heartbeat response JSON";
+        return;
+    }
+    
+    // Check if the response has lastUpdatedAt field
+    if (!responseJson.isMember("lastUpdatedAt") || responseJson["lastUpdatedAt"].isNull()) {
+        qDebug() << "DEBUG: checkLastModifiedTime - No lastUpdatedAt found in response, skipping check";
+        return;
+    }
+    
+    // Extract lastUpdatedAt from response - format: "2025/04/17 06:18:06"
+    std::string serverLastModifiedStr = responseJson["lastUpdatedAt"].asString();
+    qDebug() << "DEBUG: checkLastModifiedTime - Server lastUpdatedAt: " << QString::fromStdString(serverLastModifiedStr);
+    
+    // Parse server last modified time - format "yyyy/MM/dd HH:mm:ss"
+    QDateTime serverLastModified = QDateTime::fromString(
+        QString::fromStdString(serverLastModifiedStr),
+        "yyyy/MM/dd HH:mm:ss"
+    );
+    
+    if (!serverLastModified.isValid()) {
+        qDebug() << "ERROR: checkLastModifiedTime - Failed to parse server last modified time: " 
+                 << QString::fromStdString(serverLastModifiedStr);
+        return;
+    }
+    
+    // Get the most recent local user modified time
+    QDateTime localLastModified = getLocalLastModifiedTime();
+    qDebug() << "DEBUG: checkLastModifiedTime - Local LastModifiedTime: " << localLastModified.toString("yyyy/MM/dd HH:mm:ss");
+    
+    // Skip if no local users exist
+    if (!localLastModified.isValid()) {
+        qDebug() << "DEBUG: checkLastModifiedTime - No valid local modification time found, triggering sync";
+        checkAndSyncUsers(heartbeatResponse);
+        return;
+    }
+    
+    // Compare the times
+    if (serverLastModified > localLastModified) {
+        qDebug() << "DEBUG: checkLastModifiedTime - Server has more recent modifications, triggering sync";
+        checkAndSyncUsers(heartbeatResponse);
+    } else {
+        qDebug() << "DEBUG: checkLastModifiedTime - Local data is up to date, no sync needed";
+    }
+}*/
+// Fixed version of getLocalLastModifiedTime() - removed modifytime references
+
+QMap<QString, QString> ConnHttpServerThread::getServerUserList()
 {
     Q_D(ConnHttpServerThread);
-    qDebug() << "DEBUG: fetchAndAddUser - Starting to fetch user with ID: " << idCard;
+    QMap<QString, QString> result;
+    
+    qDebug() << "DEBUG: getServerUserList - Starting to get ALL server users (expecting ~180)";
     
     // Save original URL
     QString originalUrl = d->mHttpServerUrl;
-    qDebug() << "DEBUG: fetchAndAddUser - Original URL: " << originalUrl;
+    qDebug() << "DEBUG: getServerUserList - Original URL:" << originalUrl;
     
-    // Get the user detail URL from config
+    // Set sync URL
+    QString syncUrl = ReadConfig::GetInstance()->getSyncUsersAddress();
+    if (syncUrl.isEmpty()) {
+        qDebug() << "ERROR: getServerUserList - Sync URL not configured";
+        return result;
+    }
+    
+    qDebug() << "DEBUG: getServerUserList - Using sync URL:" << syncUrl;
+    d->mHttpServerUrl = syncUrl;
+    
+    // === ENHANCED REQUEST WITH PAGINATION SUPPORT ===
+    int pageSize = 500;  // Request more users per page
+    int currentPage = 0;
+    int totalReceived = 0;
+    bool hasMorePages = true;
+    
+    while (hasMorePages) {
+        qDebug() << "DEBUG: getServerUserList - Requesting page" << currentPage << "with size" << pageSize;
+        
+        // Prepare request with pagination
+        Json::Value json;
+        std::string timestamp = getTime();
+        std::string password = ReadConfig::GetInstance()->getSyncUsersPassword().toStdString() + timestamp;
+        password = md5sum(password);
+        password = md5sum(password);
+        transform(password.begin(), password.end(), password.begin(), ::tolower);
+        
+        json["msg_type"] = "get_all_person_ids";
+        json["sn"] = d->sn.toStdString().c_str();
+        json["timestamp"] = timestamp.c_str();
+        json["password"] = password.c_str();
+        json["page"] = currentPage;           // Add pagination support
+        json["page_size"] = pageSize;         // Request larger page size
+        json["include_all"] = true;           // Flag to get ALL users
+        
+        // === NEW DEBUG: Log request details ===
+        qDebug() << "GETSERVER_DEBUG: === REQUEST TO SERVER ===";
+        qDebug() << "GETSERVER_DEBUG: URL:" << syncUrl;
+        qDebug() << "GETSERVER_DEBUG: msg_type: get_all_person_ids";
+        qDebug() << "GETSERVER_DEBUG: page:" << currentPage;
+        qDebug() << "GETSERVER_DEBUG: page_size:" << pageSize;
+        qDebug() << "GETSERVER_DEBUG: SN:" << d->sn;
+        
+        qDebug() << "DEBUG: getServerUserList - Sending request for page" << currentPage;
+        
+        // Send request
+        QString response = d->doPostJson(json);
+        
+        // === NEW DEBUG: Log response details ===
+        qDebug() << "GETSERVER_DEBUG: === RESPONSE FROM SERVER ===";
+        qDebug() << "GETSERVER_DEBUG: Response length:" << response.length();
+        if (response.length() > 0) {
+            qDebug() << "GETSERVER_DEBUG: Response preview (first 300 chars):" << response.left(300);
+        } else {
+            qDebug() << "GETSERVER_DEBUG: ERROR - Empty response from server!";
+        }
+        
+        qDebug() << "DEBUG: getServerUserList - Received response for page" << currentPage << ", length:" << response.length();
+        
+        if (response.isEmpty()) {
+            qDebug() << "ERROR: getServerUserList - Empty response for page" << currentPage;
+            break;
+        }
+        
+        // Parse response
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (!reader.parse(response.toStdString(), responseJson)) {
+            qDebug() << "ERROR: getServerUserList - Failed to parse JSON for page" << currentPage;
+            qDebug() << "GETSERVER_DEBUG: Raw response causing parse error:" << response;
+            break;
+        }
+        
+        qDebug() << "DEBUG: getServerUserList - Successfully parsed JSON for page" << currentPage;
+        
+        // === NEW DEBUG: Show all available fields in response ===
+        qDebug() << "GETSERVER_DEBUG: === RESPONSE ANALYSIS ===";
+        qDebug() << "GETSERVER_DEBUG: Available fields in response:";
+        for (const auto& key : responseJson.getMemberNames()) {
+            qDebug() << "GETSERVER_DEBUG:   Field:" << QString::fromStdString(key);
+            if (responseJson[key].isArray()) {
+                qDebug() << "GETSERVER_DEBUG:     Array size:" << responseJson[key].size();
+            } else if (responseJson[key].isString()) {
+                qDebug() << "GETSERVER_DEBUG:     String value:" << QString::fromStdString(responseJson[key].asString()).left(50);
+            }
+        }
+        
+        // Check for updatedUsers array
+        if (!responseJson.isMember("updatedUsers") || !responseJson["updatedUsers"].isArray()) {
+            qDebug() << "ERROR: getServerUserList - No updatedUsers array in response for page" << currentPage;
+            
+            // Check for alternative field names that might contain user list
+            QStringList alternativeFields = {"userList", "users", "personList", "employeeList", "allUsers"};
+            bool foundAlternative = false;
+            
+            for (const QString& altField : alternativeFields) {
+                if (responseJson.isMember(altField.toStdString()) && responseJson[altField.toStdString()].isArray()) {
+                    qDebug() << "DEBUG: getServerUserList - Found alternative field:" << altField;
+                    responseJson["updatedUsers"] = responseJson[altField.toStdString()];
+                    foundAlternative = true;
+                    break;
+                }
+            }
+            
+            if (!foundAlternative) {
+                // If no pagination support, try to get all data in single request
+                if (currentPage == 0) {
+                    qDebug() << "WARNING: getServerUserList - Server may not support pagination, trying single request";
+                    hasMorePages = false; // Exit after this attempt
+                } else {
+                    break; // No more data
+                }
+            }
+        }
+        
+        if (!responseJson.isMember("updatedUsers")) {
+            qDebug() << "ERROR: getServerUserList - Still no updatedUsers field found";
+            break;
+        }
+        
+        // Process updatedUsers array
+        Json::Value updatedUsers = responseJson["updatedUsers"];
+        int pageUserCount = updatedUsers.size();
+        
+        qDebug() << "DEBUG: getServerUserList - Processing page" << currentPage << "with" << pageUserCount << "users";
+        qDebug() << "GETSERVER_DEBUG: === PROCESSING USER LIST ===";
+        qDebug() << "GETSERVER_DEBUG: updatedUsers array size:" << pageUserCount;
+        
+        if (pageUserCount == 0) {
+            qDebug() << "DEBUG: getServerUserList - No more users on page" << currentPage;
+            hasMorePages = false;
+            break;
+        }
+        
+        // === NEW DEBUG: Show sample of user entries ===
+        qDebug() << "GETSERVER_DEBUG: Sample user entries (first 10):";
+        int sampleCount = qMin(10, pageUserCount);
+        for (int sampleIdx = 0; sampleIdx < sampleCount; sampleIdx++) {
+            QString sampleEntry = QString::fromStdString(updatedUsers[sampleIdx].asString());
+            qDebug() << "GETSERVER_DEBUG:   Sample" << (sampleIdx + 1) << ":" << sampleEntry;
+        }
+        
+        // Process each user in this page
+        for (Json::Value::ArrayIndex i = 0; i < updatedUsers.size(); i++) {
+            QString entry = QString::fromStdString(updatedUsers[i].asString());
+            
+            if (entry.isEmpty()) {
+                qDebug() << "WARNING: getServerUserList - Empty entry at index" << i << "on page" << currentPage;
+                continue;
+            }
+            
+            // Enhanced parsing to handle multiple formats
+            QString employeeId;
+            QString timestamp;
+            
+            // Format analysis and extraction
+            int hyphenPos = entry.indexOf('-');
+            if (hyphenPos > 0) {
+                // Format: "EmployeeID-TIMESTAMP" or "EmployeeID-"
+                employeeId = entry.left(hyphenPos).trimmed();
+                QString timestampPart = entry.mid(hyphenPos + 1).trimmed();
+                
+                if (timestampPart.isEmpty()) {
+                    // Empty timestamp - use current time
+                    timestamp = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
+                    qDebug() << "DEBUG: getServerUserList - Page" << currentPage << "entry" << (i+1) 
+                             << "empty timestamp, using current:" << employeeId;
+                } else {
+                    // Has timestamp
+                    timestamp = timestampPart;
+                    qDebug() << "DEBUG: getServerUserList - Page" << currentPage << "entry" << (i+1) 
+                             << "with timestamp:" << employeeId << "at" << timestamp;
+                }
+            } else {
+                // Format: "EmployeeID" only
+                employeeId = entry.trimmed();
+                if (!employeeId.isEmpty()) {
+                    timestamp = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
+                    qDebug() << "DEBUG: getServerUserList - Page" << currentPage << "entry" << (i+1) 
+                             << "ID only, using current time:" << employeeId;
+                } else {
+                    qDebug() << "ERROR: getServerUserList - Empty employeeId for entry:" << entry;
+                    continue;
+                }
+            }
+            
+            // Validate and add to result
+            if (employeeId.isEmpty()) {
+                qDebug() << "ERROR: getServerUserList - Invalid employeeId for entry:" << entry;
+                continue;
+            }
+            
+            // Check for duplicates (in case of overlapping pages)
+            if (!result.contains(employeeId)) {
+                result[employeeId] = timestamp;
+                totalReceived++;
+                qDebug() << "DEBUG: getServerUserList - Added user" << totalReceived << ":" << employeeId;
+            } else {
+                qDebug() << "DEBUG: getServerUserList - Duplicate user ignored:" << employeeId;
+            }
+        }
+        
+        // Check if we should continue to next page
+        if (pageUserCount < pageSize) {
+            // Received fewer users than requested - likely last page
+            qDebug() << "DEBUG: getServerUserList - Page" << currentPage << "returned" << pageUserCount 
+                     << "users (less than" << pageSize << "), assuming last page";
+            hasMorePages = false;
+        } else {
+            // Full page received - check for more
+            currentPage++;
+            
+            // Safety limit to prevent infinite loops
+            if (currentPage > 10) {
+                qDebug() << "WARNING: getServerUserList - Reached page limit, stopping";
+                hasMorePages = false;
+            }
+        }
+        
+        // Add delay between pages to avoid overwhelming server
+        if (hasMorePages) {
+            qDebug() << "DEBUG: getServerUserList - Waiting before next page request";
+            QThread::msleep(1000); // 1 second delay between pages
+        }
+    }
+    
+    // Restore URL
+    d->mHttpServerUrl = originalUrl;
+    qDebug() << "DEBUG: getServerUserList - Restored original URL";
+    
+    // === NEW DEBUG: Final summary with detailed analysis ===
+    qDebug() << "GETSERVER_DEBUG: === FINAL SUMMARY ===";
+    qDebug() << "GETSERVER_DEBUG: Total pages processed:" << (currentPage + 1);
+    qDebug() << "GETSERVER_DEBUG: Total unique users received:" << result.size();
+    qDebug() << "GETSERVER_DEBUG: Expected users (~180):" << (result.size() >= 180 ? "REACHED" : "MISSING");
+    
+    if (result.size() < 100) {
+        qDebug() << "GETSERVER_DEBUG: WARNING - User count seems low, may need server-side investigation";
+        
+        // Debug: Show sample of received users
+        qDebug() << "GETSERVER_DEBUG: Sample of received users:";
+        int sampleCount = 0;
+        for (auto it = result.begin(); it != result.end() && sampleCount < 10; ++it, ++sampleCount) {
+            qDebug() << "GETSERVER_DEBUG:   Sample" << (sampleCount + 1) << ":" << it.key() << "at" << it.value();
+        }
+    } else {
+        qDebug() << "GETSERVER_DEBUG: SUCCESS - Received good number of users:" << result.size();
+    }
+    
+    // === NEW DEBUG: Show what will happen next ===
+    qDebug() << "GETSERVER_DEBUG: === NEXT STEPS ===";
+    qDebug() << "GETSERVER_DEBUG: Users will now be processed individually by fetchAndAddUser()";
+    qDebug() << "GETSERVER_DEBUG: Each user will be compared with local database and synced if needed";
+    qDebug() << "GETSERVER_DEBUG: Watch for 'fetchAndAddUser' debug messages for individual user processing";
+    
+    return result;
+}
+
+QDateTime ConnHttpServerThread::getLocalLastModifiedTime()
+{
+    qDebug() << "DEBUG: getLocalLastModifiedTime - Getting last modified time (checking for stored server date_updated time)";
+    
+    // *** CHANGED: Replace file read with debug message ***
+    QString serverTimeFile = "/mnt/user/sync_data/server_lastmodified.txt";
+    qDebug() << "SYNC_DATA_DEBUG: Would read from file:" << serverTimeFile;
+    qDebug() << "DEBUG: getLocalLastModifiedTime - No stored server date_updated time file (debug mode), using local user times";
+    
+    // Continue with existing fallback logic: find most recent local user modification time
+    qDebug() << "DEBUG: getLocalLastModifiedTime - No stored server date_updated time file, using local user times";
+    
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    if (localUsers.isEmpty()) {
+        qDebug() << "DEBUG: getLocalLastModifiedTime - No local users found";
+        return QDateTime(); // Return invalid datetime
+    }
+    
+    // Find the most recent created time from local users (existing logic)
+    QDateTime mostRecentTime;
+    
+    for (const PERSONS_t& person : localUsers) {
+        QDateTime userCreatedTime;
+        
+        // Try different formats (existing logic)
+        userCreatedTime = QDateTime::fromString(person.createtime, "yyyy/MM/dd HH:mm:ss");
+        
+        if (!userCreatedTime.isValid()) {
+            userCreatedTime = QDateTime::fromString(person.createtime, "yyyyMMddHHmmss");
+        }
+        
+        if (!userCreatedTime.isValid()) {
+            qDebug() << "DEBUG: getLocalLastModifiedTime - Couldn't parse time for user: " 
+                     << person.name << ", createtime: " << person.createtime;
+            continue;
+        }
+        
+        if (!mostRecentTime.isValid() || userCreatedTime > mostRecentTime) {
+            mostRecentTime = userCreatedTime;
+        }
+    }
+    
+    if (mostRecentTime.isValid()) {
+        qDebug() << "SUCCESS: getLocalLastModifiedTime - Using LOCAL user time:" << mostRecentTime.toString("yyyy-MM-dd hh:mm:ss");
+        qDebug() << "  Source: LOCAL (from user records)";
+    } else {
+        qDebug() << "WARNING: getLocalLastModifiedTime - No valid times found";
+    }
+    
+    return mostRecentTime;
+}
+
+bool ConnHttpServerThread::fetchAndAddUser(const QString& employeeId, const QString& serverTimeFromList)
+{
+    Q_D(ConnHttpServerThread);
+    qDebug() << "DEBUG: fetchAndAddUser - Starting to fetch user:" << employeeId;
+    
+    // Save original URL
+    QString originalUrl = d->mHttpServerUrl;
+    
+    // Set user detail URL
     QString userDetailUrl = ReadConfig::GetInstance()->getUserDetailAddress();
     if (userDetailUrl.isEmpty()) {
         qDebug() << "ERROR: fetchAndAddUser - User detail URL not configured";
-        return;
+        return false;
     }
-    qDebug() << "DEBUG: fetchAndAddUser - Using user detail URL: " << userDetailUrl;
     
-    // Set URL for this request
+    qDebug() << "DEBUG: fetchAndAddUser - Using user detail URL:" << userDetailUrl;
     d->mHttpServerUrl = userDetailUrl;
     
-    // Prepare request
+    // Prepare request (same as working version)
     Json::Value json;
     std::string timestamp = getTime();
     std::string password = ReadConfig::GetInstance()->getUserDetailPassword().toStdString() + timestamp;
@@ -3816,171 +5762,483 @@ void ConnHttpServerThread::fetchAndAddUser(const QString& idCard)
     json["sn"] = d->sn.toStdString().c_str();
     json["timestamp"] = timestamp.c_str();
     json["password"] = password.c_str();
-    json["id_card_no"] = idCard.toStdString().c_str(); // Using id_card_no as identifier
+    json["id_card_no"] = employeeId.toStdString().c_str();
     
     qDebug() << "DEBUG: fetchAndAddUser - Sending request for user details";
-    
-    // Send request
-    QString response = d->doPostJson(json);
-    qDebug() << "DEBUG: fetchAndAddUser - Received response, length: " << response.length();
-    
-    // Restore original URL
-    d->mHttpServerUrl = originalUrl;
-    qDebug() << "DEBUG: fetchAndAddUser - Restored original URL";
-    
-    // Process response
-    Json::Reader reader;
-    Json::Value responseJson;
-    if (!reader.parse(response.toStdString(), responseJson)) {
-        qDebug() << "ERROR: fetchAndAddUser - Failed to parse user detail response for ID Card: " << idCard;
-        return;
-    }
-    qDebug() << "DEBUG: fetchAndAddUser - Successfully parsed JSON response";
-    
-    // Check for proper response structure
-    if (!responseJson.isMember("allEmployeeData")) {
-        qDebug() << "ERROR: fetchAndAddUser - Response doesn't contain allEmployeeData field";
-        // Dump response keys for debugging
-        qDebug() << "DEBUG: Available keys in response:";
-        for (const auto& key : responseJson.getMemberNames()) {
-            qDebug() << "  Key: " << QString::fromStdString(key);
-        }
-        return;
-    }
-    
-    // Extract user data
-    Json::Value userData = responseJson["allEmployeeData"];
-    qDebug() << "DEBUG: fetchAndAddUser - Processing allEmployeeData";
-    
-    // Initialize variables with default values per database requirements
-    QString person_uuid = ""; // Will be created by database if empty
-    QString person_name = "";
-    QString id_card_no = idCard; // We already have this as input parameter
-    QString card_no = "000000"; // Database default
-    QString male = "Unknown"; // Database default
-    QString time_of_access = "00:00,23:59,1,1,1,1,1,1,1"; // 24/7 access
-    QByteArray faceFeature;
-    
-    // Extract employeeId as person_uuid if available
-    if (userData.isMember("assignedTo") && userData["assignedTo"].isMember("employeeId")) {
-        person_uuid = QString::fromStdString(userData["assignedTo"]["employeeId"].asString());
-        qDebug() << "DEBUG: fetchAndAddUser - Found employee ID as UUID: " << person_uuid;
-    }
-    
-    // Extract first_name as person_name if available
-    if (userData.isMember("assignedTo") && userData["assignedTo"].isMember("assignedUser") && 
-        userData["assignedTo"]["assignedUser"].isMember("first_name")) {
-        person_name = QString::fromStdString(userData["assignedTo"]["assignedUser"]["first_name"].asString());
-        qDebug() << "DEBUG: fetchAndAddUser - Found name: " << person_name;
-    }
-    
-    // Extract gender/sex if available
-    if (userData.isMember("assignedTo") && userData["assignedTo"].isMember("assignedUser") && 
-        userData["assignedTo"]["assignedUser"].isMember("gender") && 
-        !userData["assignedTo"]["assignedUser"]["gender"].isNull()) {
-        male = QString::fromStdString(userData["assignedTo"]["assignedUser"]["gender"].asString());
-        qDebug() << "DEBUG: fetchAndAddUser - Found gender: " << male;
-    }
-    
-    // Extract card_no from response if available
-    // This would depend on your server structure - adjust as needed
-    if (userData.isMember("assignedTo") && userData["assignedTo"].isMember("cardNo") && 
-        !userData["assignedTo"]["assignedUser"]["cardNo"].isNull()) {
-        card_no = QString::fromStdString(userData["assignedTo"]["assignedUser"]["cardNo"].asString());
-        qDebug() << "DEBUG: fetchAndAddUser - Found card number: " << card_no;
-    }
-    
- 
+
 	
     
-    // Extract time_of_access from response if available
-    // This would depend on your server structure - adjust as needed
-    if (userData.isMember("timeOfAccess") && !userData["timeOfAccess"].isNull()) {
-        time_of_access = QString::fromStdString(userData["timeOfAccess"].asString());
-        qDebug() << "DEBUG: fetchAndAddUser - Found time of access: " << time_of_access;
+    QString response;   // outer response
+int maxRetries = 3;
+int retryCount = 0;
+
+while (retryCount < maxRetries) {
+    qDebug() << "FETCHUSER_DEBUG: Sending request to user detail server...";
+    response = d->doPostJson(json);   // âš ï¸ no QString here
+    qDebug() << "FETCHUSER_DEBUG: Received response length:" << response.length();
+    if (response.length() > 0) {
+        qDebug() << "FETCHUSER_DEBUG: Response preview:" << response.left(200);
+    } else {
+        qDebug() << "FETCHUSER_DEBUG: ERROR - Empty response for user:" << employeeId;
+        return false;
+    }
+
+    if (response.length() > 50) { // Valid response should be longer
+        break;
     }
     
-    // Extract face feature from base64Data
-    if (userData.isMember("base64Data") && !userData["base64Data"].isNull()) {
-        std::string base64Feature = userData["base64Data"].asString();
-        qDebug() << "DEBUG: fetchAndAddUser - Found base64 face data, length: " << base64Feature.length();
+    retryCount++;
+    qDebug() << "WARNING: fetchAndAddUser - Retry" << retryCount << "for user:" << employeeId;
+    QThread::msleep(1000);
+}
+
+// Restore URL (same as working version)
+    d->mHttpServerUrl = originalUrl;
+    
+    if (response.length() <= 50) {
+        qDebug() << "ERROR: fetchAndAddUser - Failed to get valid response after retries for:" << employeeId;
+        return false;
+    }
+    
+    
+    
+    // Parse response (same as working version)
+    Json::Reader reader;
+    Json::Value responseJson;
+    std::string rawJson = response.toUtf8().constData();  // keep UTF-8 safe
+if (!reader.parse(rawJson, responseJson)) {
+    qDebug() << "ERROR: fetchAndAddUser - Failed to parse user detail response for:" << employeeId;
+    qDebug() << "ERROR: Raw Response Preview:" << response.left(200);
+    return false;
+}
+    
+    qDebug() << "DEBUG: fetchAndAddUser - Successfully parsed JSON response";
+    
+    if (!responseJson.isMember("allEmployeeData")) {
+        qDebug() << "ERROR: fetchAndAddUser - No allEmployeeData in response for:" << employeeId;
+        
+        // Check for error message in response
+        if (responseJson.isMember("message")) {
+            qDebug() << "ERROR: Server message:" << QString::fromStdString(responseJson["message"].asString());
+        }
+        
+        return false;
+    }
+    
+     Json::Value userData = responseJson["allEmployeeData"];
+    qDebug() << "DEBUG: fetchAndAddUser - Processing allEmployeeData for:" << employeeId;
+    
+    // === DUAL SYNC: Extract user information ===
+    QString employeeIdFromServer = "";
+    QString firstName = "";
+    QString gender = "";
+    QString userSpecificId = "";
+    QString rfidCardData = "";
+
+	// === Extract accessLevel from server response (NO DEFAULT) ===
+QString accessLevel = "";  // Empty - will use device default if not provided
+
+// Check for nested assignedAccessLevel object
+if (userData.isMember("assignedAccessLevel") && userData["assignedAccessLevel"].isObject()) {
+    Json::Value assignedAccessLevel = userData["assignedAccessLevel"];
+    
+    if (assignedAccessLevel.isMember("accessLevelNumber") && !assignedAccessLevel["accessLevelNumber"].isNull()) {
+        if (assignedAccessLevel["accessLevelNumber"].isInt()) {
+            accessLevel = QString::number(assignedAccessLevel["accessLevelNumber"].asInt());
+            qDebug() << "DEBUG: fetchAndAddUser - Found accessLevel from server:" << accessLevel;
+        }
+        else if (assignedAccessLevel["accessLevelNumber"].isString()) {
+            accessLevel = QString::fromStdString(assignedAccessLevel["accessLevelNumber"].asString());
+            qDebug() << "DEBUG: fetchAndAddUser - Found accessLevel from server:" << accessLevel;
+        }
+    }
+}
+    
+    // 1. employeeId (mandatory)
+    if (userData.isMember("employeeId") && !userData["employeeId"].isNull()) {
+        employeeIdFromServer = QString::fromStdString(userData["employeeId"].asString());
+        qDebug() << "DEBUG: fetchAndAddUser - Found employeeId:" << employeeIdFromServer;
+    } else {
+        qDebug() << "ERROR: fetchAndAddUser - No employeeId found in response";
+        return false;
+    }
+    
+    // 2. first_name (with multiple fallback strategies - same as working version)
+    if (userData.isMember("assignedUser") && userData["assignedUser"].isMember("first_name") && 
+        !userData["assignedUser"]["first_name"].isNull()) {
+        firstName = QString::fromStdString(userData["assignedUser"]["first_name"].asString());
+        qDebug() << "DEBUG: fetchAndAddUser - Found firstName:" << firstName;
+    } else if (userData.isMember("name") && !userData["name"].isNull()) {
+        firstName = QString::fromStdString(userData["name"].asString());
+        qDebug() << "DEBUG: fetchAndAddUser - Found name:" << firstName;
+    } else {
+        qDebug() << "WARNING: fetchAndAddUser - No first_name found, using fallback";
+        firstName = "User_" + employeeIdFromServer;
+    }
+    
+    // 3. gender (with fallback - same as working version)
+    if (userData.isMember("assignedUser") && userData["assignedUser"].isMember("gender") && 
+        !userData["assignedUser"]["gender"].isNull()) {
+        gender = QString::fromStdString(userData["assignedUser"]["gender"].asString());
+        qDebug() << "DEBUG: fetchAndAddUser - Found gender:" << gender;
+    } else {
+        qDebug() << "WARNING: fetchAndAddUser - No gender found, using default";
+        gender = "Unknown";
+    }
+    
+    // 4. Extract 'id' from user response
+    if (userData.isMember("id") && !userData["id"].isNull()) {
+        userSpecificId = QString::fromStdString(userData["id"].asString());
+        qDebug() << "DEBUG: fetchAndAddUser - Extracted id from user response:" << userSpecificId;
+    }
+    // 5. Extract RFID cards from user response and pad to specific length
+if (userData.isMember("rfidCards") && userData["rfidCards"].isArray()) {
+    Json::Value rfidCardsArray = userData["rfidCards"];
+    qDebug() << "DEBUG: fetchAndAddUser - Found rfidCards array with" << rfidCardsArray.size() << "elements";
+    
+    QStringList rfidCardsList;
+    const int RFID_CARD_LENGTH = 8; // Adjust this value based on your Wiegand reader requirements
+    
+    for (Json::Value::ArrayIndex i = 0; i < rfidCardsArray.size(); i++) {
+        if (rfidCardsArray[i].isString()) {
+            QString rfidCard = QString::fromStdString(rfidCardsArray[i].asString());
+            
+            // Pad with leading zeros to specific length for Wiegand reader compatibility
+            QString formattedRfidCard = QString("%1").arg(rfidCard, RFID_CARD_LENGTH, '0');
+            
+            rfidCardsList.append(formattedRfidCard);
+            qDebug() << "DEBUG: fetchAndAddUser - Original RFID card:" << rfidCard 
+                     << "-> Padded (" << RFID_CARD_LENGTH << " digits):" << formattedRfidCard;
+        }
+    }
+    
+    // Join multiple RFID cards with comma separator (all now padded to correct length)
+    if (!rfidCardsList.isEmpty()) {
+        rfidCardData = rfidCardsList.join(",");
+        qDebug() << "DEBUG: fetchAndAddUser - Final RFID card data with padding:" << rfidCardData;
+    }
+} else {
+    qDebug() << "DEBUG: fetchAndAddUser - No rfidCards found in response";
+}
+
+// Fallback to default icCard if no RFID data
+if (rfidCardData.isEmpty()) {
+    rfidCardData = "00000000"; // Default value padded to same length
+    qDebug() << "DEBUG: fetchAndAddUser - Using default RFID card data:" << rfidCardData;
+}
+    // === DUAL SYNC: Process Face Data (BASE64 IMAGE + FACE EMBEDDING) ===
+    QByteArray finalFaceEmbedding;
+    QByteArray processedImageData;
+    QString savedImagePath = QString("/mnt/user/reg_face_image/%1.jpg").arg(employeeIdFromServer);
+    bool hasBase64ImageData = false;
+    bool hasFaceEmbedding = false;
+    
+    qDebug() << "DEBUG: fetchAndAddUser - === PROCESSING DUAL FACE DATA ===";
+    
+    // Ensure face image directory exists
+    mkdir("/mnt/user/reg_face_image/", 0777);
+    
+    // === STEP 1: PROCESS BASE64 IMAGE DATA ===
+    std::string base64FaceImageData = "";
+    
+    if (userData.isMember("faceData") && userData["faceData"].isArray() && userData["faceData"].size() > 0) {
+        Json::Value faceDataArray = userData["faceData"];
+        qDebug() << "DEBUG: fetchAndAddUser - Found faceData array with" << faceDataArray.size() << "elements";
+        
+        for (Json::Value::ArrayIndex i = 0; i < faceDataArray.size(); i++) {
+            if (faceDataArray[i].isString()) {
+                std::string faceDataElement = faceDataArray[i].asString();
+                qDebug() << "DEBUG: fetchAndAddUser - faceData[" << i << "] length:" << faceDataElement.length();
+                
+                // Check if this looks like base64 image data (larger size)
+                if (faceDataElement.length() > 1000) {
+                    base64FaceImageData = faceDataElement;
+                    qDebug() << "DEBUG: fetchAndAddUser - Found base64 image data in faceData array element" << i;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Process and save base64 image data if found
+    if (!base64FaceImageData.empty()) {
+        qDebug() << "DEBUG: fetchAndAddUser - Processing base64 image data, length:" << base64FaceImageData.length();
         
         try {
-            // For face images in JPEG format
-            if (base64Feature.substr(0, 10).find("JFIF") != std::string::npos || 
-                base64Feature.substr(0, 10).find("/9j/") != std::string::npos) {
-                // Save base64 as image and extract features
-                QString tempPath = "/mnt/user/facedb/RegImage.jpeg";
-                QFile file(tempPath);
-                if (file.open(QIODevice::WriteOnly)) {
-                    QByteArray base64Data = QByteArray::fromStdString(base64Feature);
-                    QByteArray imageData = QByteArray::fromBase64(base64Data);
-                    file.write(imageData);
-                    file.close();
+            std::string decodedImageData = cereal::base64::decode(base64FaceImageData);
+            qDebug() << "DEBUG: fetchAndAddUser - Decoded image data size:" << decodedImageData.size() << "bytes";
+            
+            if (decodedImageData.size() > 1000 && decodedImageData.size() < 5242880) {
+                processedImageData = QByteArray(decodedImageData.data(), decodedImageData.size());
+                
+                QFile imageFile(savedImagePath);
+                if (imageFile.open(QIODevice::WriteOnly)) {
+                    qint64 bytesWritten = imageFile.write(processedImageData);
+                    imageFile.close();
                     
-                    qDebug() << "DEBUG: fetchAndAddUser - Saved base64 data as image, extracting features";
-                    
-                    // Extract face feature from the saved image
-                    int faceNum = 0;
-                    double threshold = 0;
-                    int ret = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson(
-                        tempPath, faceNum, threshold, faceFeature);
-                        
-                    if (ret != 0) {
-                        qDebug() << "ERROR: fetchAndAddUser - Failed to extract face feature from image: " << ret;
-                        return;
+                    if (bytesWritten == processedImageData.size()) {
+                        hasBase64ImageData = true;
+                        qDebug() << "DEBUG: fetchAndAddUser - BASE64 IMAGE SAVED:" << savedImagePath;
                     }
-                    qDebug() << "DEBUG: fetchAndAddUser - Successfully extracted face feature from image";
-                } else {
-                    qDebug() << "ERROR: fetchAndAddUser - Failed to save face image";
-                    return;
                 }
-            } else {
-                // Assume it's already a binary feature
-                std::string binaryFeature = cereal::base64::decode(base64Feature);
-                faceFeature = QByteArray(binaryFeature.data(), binaryFeature.size());
-                qDebug() << "DEBUG: fetchAndAddUser - Decoded face feature, size: " << faceFeature.size();
             }
         } catch (const std::exception& e) {
-            qDebug() << "ERROR: fetchAndAddUser - Failed to decode base64 data: " << e.what();
-            return;
+            qDebug() << "ERROR: fetchAndAddUser - Base64 image decode failed:" << e.what();
+        }
+    }
+    
+    // === STEP 2: PROCESS FACE EMBEDDING DATA ===
+    std::string base64FaceEmbedding = "";
+    
+    // Check for face embedding in various fields
+    if (userData.isMember("faceFeature") && !userData["faceFeature"].isNull()) {
+        std::string faceFeatureStr = userData["faceFeature"].asString();
+        if (faceFeatureStr.length() > 100) {
+            base64FaceEmbedding = faceFeatureStr;
+            qDebug() << "DEBUG: fetchAndAddUser - Found face embedding in faceFeature field";
+        }
+    }
+    else if (userData.isMember("faceEmbedding") && !userData["faceEmbedding"].isNull()) {
+        std::string faceEmbeddingStr = userData["faceEmbedding"].asString();
+        if (faceEmbeddingStr.length() > 100) {
+            base64FaceEmbedding = faceEmbeddingStr;
+            qDebug() << "DEBUG: fetchAndAddUser - Found face embedding in faceEmbedding field";
+        }
+    }
+    else if (userData.isMember("faceData") && userData["faceData"].isArray()) {
+        // Look for smaller base64 data (likely face embedding)
+        Json::Value faceDataArray = userData["faceData"];
+        for (Json::Value::ArrayIndex i = 0; i < faceDataArray.size(); i++) {
+            if (faceDataArray[i].isString()) {
+                std::string faceDataElement = faceDataArray[i].asString();
+                // Face embeddings are typically smaller than images
+                if (faceDataElement.length() > 100 && faceDataElement.length() < 2000) {
+                    base64FaceEmbedding = faceDataElement;
+                    qDebug() << "DEBUG: fetchAndAddUser - Found face embedding in faceData array element" << i;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Process face embedding if found
+    if (!base64FaceEmbedding.empty()) {
+        qDebug() << "DEBUG: fetchAndAddUser - Processing face embedding, base64 length:" << base64FaceEmbedding.length();
+        
+        try {
+            std::string decodedEmbedding = cereal::base64::decode(base64FaceEmbedding);
+            qDebug() << "DEBUG: fetchAndAddUser - Decoded embedding size:" << decodedEmbedding.size() << "bytes";
+            
+            if (decodedEmbedding.size() >= 128 && decodedEmbedding.size() <= 2048) {
+                finalFaceEmbedding = QByteArray(decodedEmbedding.data(), decodedEmbedding.size());
+                hasFaceEmbedding = true;
+                qDebug() << "DEBUG: fetchAndAddUser - Successfully decoded face embedding, size:" << finalFaceEmbedding.size();
+            }
+        } catch (const std::exception& e) {
+            qDebug() << "ERROR: fetchAndAddUser - Failed to decode face embedding:" << e.what();
+        }
+    }
+    
+    // === FALLBACK: Extract embedding from saved image if not provided ===
+    if (!hasFaceEmbedding && hasBase64ImageData && QFile::exists(savedImagePath)) {
+        qDebug() << "DEBUG: fetchAndAddUser - FALLBACK - Extracting embedding from saved image";
+        
+        int result = -1;
+        int faceNum = 0;
+        double threshold = 0;
+        QByteArray extractedEmbedding;
+        
+        result = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson(
+            savedImagePath, 
+            faceNum, 
+            threshold, 
+            extractedEmbedding
+        );
+        
+        if (result == 0 && !extractedEmbedding.isEmpty()) {
+            finalFaceEmbedding = extractedEmbedding;
+            hasFaceEmbedding = true;
+            qDebug() << "DEBUG: fetchAndAddUser - FALLBACK SUCCESS - Extracted embedding from image:" << finalFaceEmbedding.size() << "bytes";
+        } else {
+            qDebug() << "WARNING: fetchAndAddUser - FALLBACK FAILED - Could not extract embedding from image, result:" << result;
+        }
+    }
+    
+    // Validate critical data (same as working version)
+    if (employeeIdFromServer != employeeId) {
+        qDebug() << "ERROR: fetchAndAddUser - EmployeeId mismatch. Expected:" << employeeId 
+                 << "Got:" << employeeIdFromServer;
+        return false;
+    }
+    
+    qDebug() << "DEBUG: fetchAndAddUser - About to store user with:";
+    qDebug() << "  employeeId:" << employeeIdFromServer;
+    qDebug() << "  firstName:" << firstName;
+    qDebug() << "  gender:" << gender;
+    qDebug() << "  hasBase64ImageData:" << (hasBase64ImageData ? "Yes" : "No");
+    qDebug() << "  hasFaceEmbedding:" << (hasFaceEmbedding ? "Yes" : "No");
+    
+    // === DUAL SYNC: Store user with enhanced dual face data ===
+    bool success = false;
+    QString existingUuid = findUuidByEmployeeId(employeeIdFromServer);
+    
+    // Get config values for enhanced storage
+    QString storedTenantId = ReadConfig::GetInstance()->getHeartbeat_TenantId();
+    QString storedAttendanceMode = ReadConfig::GetInstance()->getHeartbeat_AttendanceMode();
+    QString storedDeviceStatus = ReadConfig::GetInstance()->getHeartbeat_DeviceStatus();
+    QString derivedStatus = storedDeviceStatus.isEmpty() ? "approved" : storedDeviceStatus;
+    
+    // Setup server time
+    QString finalServerCreateTime = "";
+    if (!serverTimeFromList.isEmpty()) {
+        QDateTime serverTimeIST = convertUTCToIST(serverTimeFromList);
+        if (serverTimeIST.isValid()) {
+            finalServerCreateTime = serverTimeIST.toString("yyyy/MM/dd HH:mm:ss");
+        } else {
+            finalServerCreateTime = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
         }
     } else {
-        qDebug() << "ERROR: fetchAndAddUser - No face data found";
-        return;
+        finalServerCreateTime = QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm:ss");
     }
     
-    // Set default name if none was found
-    if (person_name.isEmpty()) {
-        person_name = "User_" + id_card_no;
-        qDebug() << "DEBUG: fetchAndAddUser - Setting default name: " << person_name;
-    }
+    // Set server time for DB functions
+    RegisteredFacesDB::GetInstance()->setCurrentUserServerTime(finalServerCreateTime);
     
-    // Add the user to local database
-    qDebug() << "DEBUG: fetchAndAddUser - Adding user to database with the following details:";
-    qDebug() << "  UUID: " << person_uuid;
-    qDebug() << "  Name: " << person_name;
-    qDebug() << "  ID Card: " << id_card_no;
-    qDebug() << "  Card No: " << card_no;
-    qDebug() << "  Gender: " << male;
-    qDebug() << "  Time Access: " << time_of_access;
-    qDebug() << "  Face Feature Size: " << faceFeature.size();
-    
-    bool success = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(
-        person_uuid, 
-        person_name, 
-        id_card_no, 
-        card_no, 
-        male, 
-        "", 
-        time_of_access, 
-        faceFeature);
+    if (!existingUuid.isEmpty()) {
+        // User exists - update (same pattern as working version)
+        qDebug() << "DEBUG: fetchAndAddUser - User exists, updating:" << employeeIdFromServer;
         
-    if (success) {
-        qDebug() << "DEBUG: fetchAndAddUser - Successfully added user to local database: " << person_name << " (ID Card: " << id_card_no << ")";
+        // Enhanced update with dual face data
+        int updateResult = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(
+    existingUuid,           // uuid
+    firstName,              // name
+    employeeIdFromServer,   // idCard
+    rfidCardData,          // icCard (RFID cards from server)
+    gender,                // sex
+    "",                    // department
+    "00:00,23:59,1,1,1,1,1,1,1", // timeOfAccess
+    "",                    // jpeg (not used in update)
+    finalFaceEmbedding,    // faceEmbedding
+    storedAttendanceMode,  // attendanceMode
+    storedTenantId,        // tenantId
+    userSpecificId,        // id
+    derivedStatus,         // status
+	"",                     // uploadStatus - ADD THIS
+    accessLevel.isEmpty() ? 0 : accessLevel.toInt()  // ADD THIS - accessLevel (14th parameter)
+);
+        
+        success = (updateResult == 1);
+        qDebug() << "DEBUG: fetchAndAddUser - Update result:" << (success ? "SUCCESS" : "FAILED");
+        
     } else {
-        qDebug() << "ERROR: fetchAndAddUser - Failed to add user to local database: " << id_card_no;
+        // New user - add (same pattern as working version)
+        qDebug() << "DEBUG: fetchAndAddUser - New user, adding:" << employeeIdFromServer;
+        
+        // Enhanced add with dual face data
+        success = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(
+    "",                     // uuid (auto-generated)
+    firstName,              // name
+    employeeIdFromServer,   // idCard
+    rfidCardData,          // icCard (RFID cards from server)
+    gender,                // sex
+    "",                    // department
+    "00:00,23:59,1,1,1,1,1,1,1", // timeOfAccess
+    finalFaceEmbedding,    // face feature
+    processedImageData,    // faceImageData (DUAL SYNC: base64 image)
+    "jpg",                 // imageFormat
+    storedAttendanceMode,  // attendanceMode
+    storedTenantId,        // tenantId
+    userSpecificId,        // id
+    derivedStatus,         // status
+	0,
+    accessLevel.isEmpty() ? 0 : accessLevel.toInt()  // ADD THIS - accessLevel (15th parameter)
+);
     }
+    
+    // Clear server time after use
+    RegisteredFacesDB::GetInstance()->setCurrentUserServerTime("");
+    
+    if (success) {
+    qDebug() << "SUCCESS: fetchAndAddUser - Successfully stored user with dual face data:" << firstName 
+             << "(" << employeeIdFromServer << ")";
+    qDebug() << "DUAL_SYNC_STATUS:";
+    qDebug() << "  - Base64 Image:" << (hasBase64ImageData ? "SYNCED" : "MISSING");
+    qDebug() << "  - Face Embedding:" << (hasFaceEmbedding ? "SYNCED" : "MISSING");
+    qDebug() << "  - Image File:" << (QFile::exists(savedImagePath) ? "SAVED" : "MISSING");
+    qDebug() << "  - Access Level:" << (accessLevel.isEmpty() ? "DEFAULT (0)" : accessLevel);  // ADD THIS
+        
+        // Force UI update
+        updateLocalFaceCount();
+        return true;
+    } else {
+        qDebug() << "ERROR: fetchAndAddUser - Failed to store user:" << employeeIdFromServer;
+        return false;
+    }
+}
+
+bool ConnHttpServerThread::storeServerDateUpdatedForUser(const QString& employeeId, const QString& serverDateUpdated)
+{
+    qDebug() << "DEBUG: storeServerDateUpdatedForUser - Storing for employee:" << employeeId;
+    qDebug() << "  Server date_updated time:" << serverDateUpdated;
+    
+    if (employeeId.isEmpty() || serverDateUpdated.isEmpty()) {
+        qDebug() << "ERROR: storeServerDateUpdatedForUser - Empty parameters";
+        return false;
+    }
+    
+    // Parse and convert server UTC time to local format for storage (keep all this logic)
+    QString localFormattedTime = "";
+    
+    // Try to parse server time (assuming UTC format like "2025-07-31T14:39:50.000Z" or "2025/07/31 14:39:50")
+    QDateTime serverTime;
+    
+    // Format 1: ISO 8601 with Z (UTC)
+    if (serverDateUpdated.contains('T') && serverDateUpdated.endsWith('Z')) {
+        serverTime = QDateTime::fromString(serverDateUpdated, Qt::ISODate);
+    }
+    // Format 2: ISO 8601 without Z
+    else if (serverDateUpdated.contains('T')) {
+        serverTime = QDateTime::fromString(serverDateUpdated, "yyyy-MM-ddTHH:mm:ss");
+        serverTime.setTimeSpec(Qt::UTC);
+    }
+    // Format 3: Simple format "2025/07/31 14:39:50"
+    else if (serverDateUpdated.contains('/')) {
+        serverTime = QDateTime::fromString(serverDateUpdated, "yyyy/MM/dd HH:mm:ss");
+        serverTime.setTimeSpec(Qt::UTC);
+    }
+    // Format 4: Simple format "2025-07-31 14:39:50"
+    else if (serverDateUpdated.contains('-')) {
+        serverTime = QDateTime::fromString(serverDateUpdated, "yyyy-MM-dd HH:mm:ss");
+        serverTime.setTimeSpec(Qt::UTC);
+    }
+    
+    if (serverTime.isValid()) {
+        // Convert UTC to local time for storage (assuming IST = UTC + 5:30)
+        QDateTime localTime = serverTime.addSecs(5 * 3600 + 30 * 60);
+        localFormattedTime = localTime.toString("yyyy/MM/dd HH:mm:ss");
+        
+        qDebug() << "SUCCESS: storeServerDateUpdatedForUser - Converted server time:";
+        qDebug() << "  Server UTC:" << serverTime.toString("yyyy-MM-dd HH:mm:ss");
+        qDebug() << "  Local IST:" << localFormattedTime;
+    } else {
+        qDebug() << "WARNING: storeServerDateUpdatedForUser - Could not parse server time, using as-is";
+        localFormattedTime = serverDateUpdated; // Use as-is if parsing fails
+    }
+    
+    // *** CHANGED: Replace directory creation and file operations with debug messages ***
+    QString userTimeDir = "/mnt/user/sync_data/user_times/";
+    QString userTimeFile = QString("%1%2_server_time.txt").arg(userTimeDir).arg(employeeId);
+    
+    qDebug() << "SYNC_DATA_DEBUG: Would create directory: /mnt/user/sync_data/user_times/";
+    qDebug() << "SYNC_DATA_DEBUG: Would write to file:" << userTimeFile;
+    qDebug() << "SYNC_DATA_DEBUG: Content would be:" << localFormattedTime;
+    qDebug() << "SYNC_DATA_DEBUG: EMPLOYEE_ID=" << employeeId;
+    qDebug() << "SYNC_DATA_DEBUG: SERVER_TIME_UTC=" << serverDateUpdated;
+    qDebug() << "SYNC_DATA_DEBUG: LOCAL_TIME_IST=" << localFormattedTime;
+    qDebug() << "SYNC_DATA_DEBUG: STORED_AT=" << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    qDebug() << "SUCCESS: storeServerDateUpdatedForUser - Stored in debug (no file created):" << userTimeFile;
+    
+    return true;
 }
 
 void ConnHttpServerThread::setLastHeartbeatResponse(const QString& response)
@@ -3991,4 +6249,256 @@ void ConnHttpServerThread::setLastHeartbeatResponse(const QString& response)
 QString ConnHttpServerThread::getLastHeartbeatResponse() const
 {
     return m_lastHeartbeatResponse;
+}
+
+void ConnHttpServerThread::debugPrintSyncConfig()
+{
+    ReadConfig readConfig;
+    
+    qDebug() << "=== DEBUG SYNC CONFIGURATION ===";
+    qDebug() << "Sync enabled:" << (readConfig.getSyncEnabled() ? "Yes" : "No");
+    qDebug() << "Sync users address:" << ReadConfig::GetInstance()->getSyncUsersAddress();
+    qDebug() << "User detail address:" << ReadConfig::GetInstance()->getUserDetailAddress();
+    qDebug() << "Registration address:" << ReadConfig::GetInstance()->getPerson_Registration_Address();
+    qDebug() << "Server manager address:" << ReadConfig::GetInstance()->getSrv_Manager_Address();
+    qDebug() << "=== END DEBUG CONFIG ===";
+}
+
+void ConnHttpServerThread::debugPrintUserCounts()
+{
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    
+    qDebug() << "=== DEBUG USER COUNT SUMMARY ===";
+    qDebug() << "Total local users:" << localUsers.size();
+    
+    int usersWithFaceData = 0;
+    int usersWithoutFaceData = 0;
+    
+    for (const PERSONS_t& person : localUsers) {
+        if (!person.feature.isEmpty()) {
+            usersWithFaceData++;
+        } else {
+            usersWithoutFaceData++;
+        }
+        
+        qDebug() << "User:" << person.name << "ID:" << person.idcard 
+                 << "UUID:" << person.uuid << "FaceData:" << (person.feature.isEmpty() ? "No" : "Yes")
+                 << "Created:" << person.createtime;
+    }
+    
+    qDebug() << "Users with face data:" << usersWithFaceData;
+    qDebug() << "Users without face data:" << usersWithoutFaceData;
+    qDebug() << "=== END DEBUG SUMMARY ===";
+}
+
+// Helper function to find UUID by employeeId
+QString ConnHttpServerThread::findUuidByEmployeeId(const QString& employeeId)
+{
+    qDebug() << "DEBUG: findUuidByEmployeeId - Looking for employeeId:" << employeeId;
+    
+    QSqlQuery query(QSqlDatabase::database("isc_arcsoft_face"));
+    query.prepare("SELECT uuid FROM person WHERE idcardnum = ?");
+    query.bindValue(0, employeeId);
+    
+    if (query.exec() && query.next()) {
+        QString uuid = query.value("uuid").toString();
+        qDebug() << "DEBUG: findUuidByEmployeeId - Found UUID:" << uuid << "for employeeId:" << employeeId;
+        return uuid;
+    } else {
+        qDebug() << "DEBUG: findUuidByEmployeeId - No UUID found for employeeId:" << employeeId;
+        return QString();
+    }
+}
+
+QDateTime ConnHttpServerThread::convertUTCToIST(const QString& utcTimeStr)
+{
+    qDebug() << "DEBUG: convertUTCToIST - Input UTC string:" << utcTimeStr;
+    
+    QDateTime utcTime = QDateTime::fromString(utcTimeStr, "yyyy/MM/dd HH:mm:ss");
+    if (!utcTime.isValid()) {
+        qDebug() << "ERROR: convertUTCToIST - Invalid UTC time format:" << utcTimeStr;
+        return QDateTime();
+    }
+    
+    utcTime.setTimeSpec(Qt::UTC);
+    
+    // Convert to IST (UTC + 5:30)
+    QDateTime istTime = utcTime.addSecs(5 * 3600 + 30 * 60);
+    istTime.setTimeSpec(Qt::LocalTime);
+    
+    qDebug() << "DEBUG: convertUTCToIST - UTC:" << utcTime.toString("yyyy/MM/dd HH:mm:ss") 
+             << "-> IST:" << istTime.toString("yyyy/MM/dd HH:mm:ss");
+    
+    return istTime;
+}
+
+QDateTime ConnHttpServerThreadPrivate::getLocalLastModifiedTimeUTC() 
+{
+    QDateTime localLastModified = q_ptr->getLocalLastModifiedTime();  // Call the public function
+    if (!localLastModified.isValid()) {
+        qDebug() << "DEBUG: getLocalLastModifiedTimeUTC - No valid local time found";
+        return QDateTime();
+    }
+    
+    // Convert to UTC for comparison
+    return convertLocalTimeToUTC(localLastModified);
+}
+QDateTime ConnHttpServerThreadPrivate::convertLocalTimeToUTC(const QDateTime& localTime) 
+{
+    if (!localTime.isValid()) {
+        return QDateTime();
+    }
+    
+    // Subtract 5:30 from IST to get UTC
+    QDateTime utcTime = localTime.addSecs(-(5 * 3600 + 30 * 60));
+    utcTime.setTimeSpec(Qt::UTC);
+    
+    qDebug() << "DEBUG: convertLocalTimeToUTC - IST: " << localTime.toString("yyyy/MM/dd HH:mm:ss")
+             << " -> UTC: " << utcTime.toString("yyyy/MM/dd HH:mm:ss");
+    
+    return utcTime;
+}
+
+void ConnHttpServerThread::updateLocalFaceCount()
+{
+    // Get local face database count
+    QList<PERSONS_t> localUsers = RegisteredFacesDB::GetInstance()->GetAllPersonFromRAM();
+    int localFaceCount = 0;
+    
+    // Count users that have face data
+    for (const PERSONS_t &person : localUsers) {
+        // Check if the person has face data - use correct member name
+        if (!person.name.isEmpty() && !person.feature.isEmpty()) {  // Changed from person.id to person.feature
+            localFaceCount++;
+        }
+    }
+    
+    // Get total user count from last heartbeat response
+    int totalUserCount = 0;
+    QString lastResponse = getLastHeartbeatResponse();
+    if (!lastResponse.isEmpty()) {
+        Json::Reader reader;
+        Json::Value responseJson;
+        if (reader.parse(lastResponse.toStdString(), responseJson)) {
+            if (responseJson.isMember("TotalUserCount")) {
+                totalUserCount = atoi(responseJson["TotalUserCount"].asString().c_str());
+            }
+        }
+    }
+    
+    qDebug() << "DEBUG: Local face count:" << localFaceCount << "Total users:" << totalUserCount;
+    
+    // Update UI
+    if (qXLApp && qXLApp->GetFaceMainFrm()) {
+        FaceMainFrm* mainFrm = qXLApp->GetFaceMainFrm();
+        mainFrm->updateLocalFaceCount(localFaceCount, totalUserCount);
+    }
+}
+
+void ConnHttpServerThread::syncIndividualUser(const QString& employeeId)
+{
+    qDebug() << "DEBUG: syncIndividualUser - Starting sync for:" << employeeId;
+    
+    // Disable UI temporarily
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    
+    // Perform the sync directly (it's usually fast)
+    bool success = this->fetchAndAddUser(employeeId);
+    
+    // Restore cursor
+    QApplication::restoreOverrideCursor();
+    
+    // Emit completion signal
+    emit userSyncCompleted(employeeId, success);
+}
+
+// Add this helper function to ConnHttpServerThreadPrivate class
+QDateTime ConnHttpServerThreadPrivate::convertServerUTCToIST(const QString& utcTimeStr)
+{
+    qDebug() << "DEBUG: convertServerUTCToIST - Input UTC string:" << utcTimeStr;
+    
+    // Parse the ISO 8601 UTC format: "2025-06-13T15:00:22.786Z"
+    QDateTime utcTime = QDateTime::fromString(utcTimeStr, Qt::ISODate);
+    
+    if (!utcTime.isValid()) {
+        qDebug() << "ERROR: convertServerUTCToIST - Invalid UTC time format:" << utcTimeStr;
+        return QDateTime();
+    }
+    
+    // Ensure it's marked as UTC
+    utcTime.setTimeSpec(Qt::UTC);
+    
+    // Convert to IST (UTC + 5:30)
+    QDateTime istTime = utcTime.addSecs(5 * 3600 + 30 * 60);
+    istTime.setTimeSpec(Qt::LocalTime);
+    
+    qDebug() << "DEBUG: convertServerUTCToIST - UTC:" << utcTime.toString(Qt::ISODate) 
+             << "-> IST:" << istTime.toString("yyyy-MM-dd dddd hh:mm:ss");
+    
+    return istTime;
+}
+
+
+// Add cleanup implementation:
+void ConnHttpServerThread::initializeCleanup()
+{
+    cleanupTimer = new QTimer(this);
+    connect(cleanupTimer, &QTimer::timeout, this, &ConnHttpServerThread::performPeriodicCleanup);
+    
+    // Cleanup every 5 minutes
+    cleanupTimer->start(5 * 60 * 1000);
+    
+    // Initial cleanup
+    QTimer::singleShot(10000, this, &ConnHttpServerThread::performPeriodicCleanup);
+}
+
+void ConnHttpServerThread::performPeriodicCleanup()
+{
+    qDebug() << "DEBUG: performPeriodicCleanup - Starting cleanup";
+    
+    cleanupTempFiles();
+    
+    // Force Qt memory cleanup
+    QCoreApplication::sendPostedEvents();
+}
+
+void ConnHttpServerThread::cleanupTempFiles()
+{
+    QStringList tempPaths = {
+        "/mnt/user/tmp/",
+        "/mnt/user/facedb/RegImage.jpeg",
+        "/mnt/user/facedb/RegImage.jpg", 
+        "/mnt/user/facedb/faceFeature.jpg",
+        "/mnt/user/catch_rgb_base64.raw",
+        "/mnt/user/catch_ir_base64.raw"
+    };
+    
+    for (const QString& path : tempPaths) {
+        if (path.endsWith("/")) {
+            // Directory cleanup - remove old files
+            QDir dir(path);
+            if (dir.exists()) {
+                QFileInfoList files = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+                for (const QFileInfo& file : files) {
+                    // Remove files older than 1 hour
+                    if (file.lastModified().addSecs(3600) < QDateTime::currentDateTime()) {
+                        QFile::remove(file.absoluteFilePath());
+                        qDebug() << "DEBUG: Cleaned up old temp file:" << file.fileName();
+                    }
+                }
+            }
+        } else {
+            // Individual file cleanup
+            QFileInfo fileInfo(path);
+            if (fileInfo.exists() && 
+                fileInfo.lastModified().addSecs(300) < QDateTime::currentDateTime()) { // 5 minutes old
+                QFile::remove(path);
+                qDebug() << "DEBUG: Cleaned up temp file:" << path;
+            }
+        }
+    }
+    
+    // Clean up any core dump or log files
+    myHelper::Utils_ExecCmd("find /mnt/user -name '*.core' -mtime +1 -delete");
+    myHelper::Utils_ExecCmd("find /tmp -name 'curl_debug*' -mtime +1 -delete");
 }

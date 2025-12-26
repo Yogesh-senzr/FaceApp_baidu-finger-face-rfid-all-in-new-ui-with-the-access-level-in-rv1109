@@ -1,13 +1,150 @@
-#include "SrvSetupFrm.h"
+// Modified SrvSetupFrm.cpp - Card-based UI with ReadConfig integration
 
+#include "SrvSetupFrm.h"
 #include "Config/ReadConfig.h"
 #include "MessageHandler/Log.h"
+
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QFrame>
+#include <QScrollArea>
 #include <QSettings>
 #include <QTextCodec>
+#include <QMessageBox>
+
+// Custom Server Configuration Card Widget
+class ServerConfigCardWidget : public QFrame
+{
+    Q_OBJECT
+public:
+    ServerConfigCardWidget(const QString &title, bool showPassword = false, QWidget *parent = nullptr)
+        : QFrame(parent), m_title(title), m_showPassword(showPassword)
+    {
+        setObjectName("ServerConfigCardWidget");
+        setupUI(title, showPassword);
+    }
+    
+    QString getTitle() const { return m_title; }
+    QString getAddressValue() const { return m_addressEdit ? m_addressEdit->text() : ""; }
+    QString getPasswordValue() const { return m_passwordEdit ? m_passwordEdit->text() : ""; }
+    
+    void setAddressValue(const QString &value)
+    {
+        if (m_addressEdit) {
+            m_addressEdit->setText(value);
+        }
+    }
+    
+    void setPasswordValue(const QString &value)
+    {
+        if (m_passwordEdit) {
+            m_passwordEdit->setText(value);
+        }
+    }
+
+private:
+    void setupUI(const QString &title, bool showPassword)
+    {
+        QVBoxLayout *mainLayout = new QVBoxLayout(this);
+        mainLayout->setContentsMargins(20, 16, 20, 16);
+        mainLayout->setSpacing(12);
+        
+        // Header with icon and title
+        QHBoxLayout *headerLayout = new QHBoxLayout;
+        headerLayout->setSpacing(12);
+        
+        // Icon container
+        QFrame *iconFrame = new QFrame;
+        iconFrame->setFixedSize(32, 32);
+        iconFrame->setObjectName(getIconObjectName(title));
+        
+        QHBoxLayout *iconLayout = new QHBoxLayout(iconFrame);
+        iconLayout->setContentsMargins(0, 0, 0, 0);
+        
+        QLabel *iconLabel = new QLabel;
+        iconLabel->setText(getIconText(title));
+        iconLabel->setAlignment(Qt::AlignCenter);
+        iconLabel->setObjectName("ServerConfigIconLabel");
+        iconLayout->addWidget(iconLabel);
+        
+        // Title
+        QLabel *titleLabel = new QLabel(title);
+        titleLabel->setObjectName("ServerConfigTitleLabel");
+        
+        // Editable indicator
+        QLabel *editableLabel = new QLabel("(Editable)");
+        editableLabel->setObjectName("ServerConfigEditableLabel");
+        
+        headerLayout->addWidget(iconFrame);
+        headerLayout->addWidget(titleLabel);
+        headerLayout->addWidget(editableLabel);
+        headerLayout->addStretch();
+        
+        // Address input field
+        m_addressEdit = new QLineEdit;
+        m_addressEdit->setObjectName("ServerConfigEdit");
+        m_addressEdit->setPlaceholderText("Enter server URL (https://...)");
+        m_addressEdit->setContextMenuPolicy(Qt::NoContextMenu);
+        
+        mainLayout->addLayout(headerLayout);
+        mainLayout->addWidget(m_addressEdit);
+        
+        // Password field (if needed)
+        if (showPassword) {
+            QLabel *passwordLabel = new QLabel("Password:");
+            passwordLabel->setObjectName("ServerConfigPasswordLabel");
+            
+            m_passwordEdit = new QLineEdit;
+            m_passwordEdit->setObjectName("ServerConfigPasswordEdit");
+            m_passwordEdit->setPlaceholderText("Enter password");
+            m_passwordEdit->setEchoMode(QLineEdit::Password);
+            m_passwordEdit->setContextMenuPolicy(Qt::NoContextMenu);
+            
+            mainLayout->addSpacing(8);
+            mainLayout->addWidget(passwordLabel);
+            mainLayout->addWidget(m_passwordEdit);
+        }
+    }
+    
+    QString getIconObjectName(const QString &title)
+    {
+        if (title.contains("HTTP") && title.contains("Server"))
+            return "MainServerIconFrame";
+        else if (title.contains("Person") && title.contains("Record"))
+            return "PersonRecordIconFrame";
+        else if (title.contains("Registration"))
+            return "RegistrationIconFrame";
+        else if (title.contains("Sync"))
+            return "SyncIconFrame";
+        else if (title.contains("Detail"))
+            return "DetailIconFrame";
+        return "DefaultServerIconFrame";
+    }
+    
+    QString getIconText(const QString &title)
+    {
+        if (title.contains("HTTP") && title.contains("Server"))
+            return "🌐";
+        else if (title.contains("Person") && title.contains("Record"))
+            return "📊";
+        else if (title.contains("Registration"))
+            return "👤";
+        else if (title.contains("Sync"))
+            return "🔄";
+        else if (title.contains("Detail"))
+            return "ℹ️";
+        return "🖥️";
+    }
+
+private:
+    QString m_title;
+    bool m_showPassword;
+    QLineEdit *m_addressEdit;
+    QLineEdit *m_passwordEdit = nullptr;
+};
 
 class SrvSetupFrmPrivate
 {
@@ -19,22 +156,18 @@ private:
     void InitData();
     void InitConnect();
 private:
-    QLineEdit *m_pHttpServerAddress;
-    QLineEdit *m_pHttpServerPassword;
-
-    QLineEdit *m_pPostPersonRecordHttpServerAddress;
-    QLineEdit *m_pPostPersonRecordHttpServerPassword;
-
-    QLineEdit *m_pNewRegisteredPersonHttpServerAddress;
-    QLineEdit *m_pNewRegisteredPersonHttpServerPassword;
-
-    QLineEdit *m_pSyncUsersHttpServerAddress;
-    QLineEdit *m_pSyncUsersHttpServerPassword;
-
-    QLineEdit *m_pUserDetailHttpServerAddress;
-    QLineEdit *m_pUserDetailHttpServerPassword;    
-
-
+    QVBoxLayout *m_pMainLayout;
+    QScrollArea *m_pScrollArea;
+    QWidget *m_pContentWidget;
+    QVBoxLayout *m_pContentLayout;
+    
+    // Configuration cards
+    ServerConfigCardWidget *m_pHttpServerCard;
+    ServerConfigCardWidget *m_pPostPersonRecordCard;
+    ServerConfigCardWidget *m_pNewRegisteredPersonCard;
+    ServerConfigCardWidget *m_pSyncUsersCard;
+    ServerConfigCardWidget *m_pUserDetailCard;
+    
     QPushButton *m_pConfirmButton;
 private:
     SrvSetupFrm *const q_ptr;
@@ -48,122 +181,85 @@ SrvSetupFrmPrivate::SrvSetupFrmPrivate(SrvSetupFrm *dd)
     this->InitConnect();
 }
 
-
-SrvSetupFrm::SrvSetupFrm(QWidget *parent)
-    : SettingBaseFrm(parent)
-    , d_ptr(new SrvSetupFrmPrivate(this))
-{
-
-}
-
-SrvSetupFrm::~SrvSetupFrm()
-{
-
-}
-
 void SrvSetupFrmPrivate::InitUI()
 {
-	m_pHttpServerAddress = new QLineEdit;
-	m_pHttpServerPassword = new QLineEdit;
-    m_pPostPersonRecordHttpServerAddress = new QLineEdit;
-    m_pPostPersonRecordHttpServerPassword = new QLineEdit;
-    m_pNewRegisteredPersonHttpServerAddress = new QLineEdit;
-    m_pNewRegisteredPersonHttpServerPassword = new QLineEdit;
-    m_pSyncUsersHttpServerAddress = new QLineEdit;
-    m_pSyncUsersHttpServerPassword = new QLineEdit;
-    m_pUserDetailHttpServerAddress = new QLineEdit;
-    m_pUserDetailHttpServerPassword = new QLineEdit; 
-
-    m_pHttpServerAddress->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pHttpServerPassword->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pPostPersonRecordHttpServerAddress->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pPostPersonRecordHttpServerPassword->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pNewRegisteredPersonHttpServerAddress->setContextMenuPolicy(Qt::NoContextMenu);  
-    m_pNewRegisteredPersonHttpServerPassword->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pSyncUsersHttpServerAddress->setContextMenuPolicy(Qt::NoContextMenu);  
-    m_pSyncUsersHttpServerPassword->setContextMenuPolicy(Qt::NoContextMenu);
-    m_pUserDetailHttpServerAddress->setContextMenuPolicy(Qt::NoContextMenu);  
-    m_pUserDetailHttpServerPassword->setContextMenuPolicy(Qt::NoContextMenu);
-
-    m_pConfirmButton = new QPushButton;//确定
-    QVBoxLayout *vLayout = new QVBoxLayout;
-    vLayout->addWidget(new QLabel(QObject::tr("HTTPServerAddress")));//HTTP服务器地址
-    vLayout->addWidget(m_pHttpServerAddress);
-
-    QVBoxLayout *vLayout1 = new QVBoxLayout;
-    vLayout1->addWidget(new QLabel(QObject::tr("HTTPServerPassword")));//HTTP服务器密码
-    vLayout1->addWidget(m_pHttpServerPassword);
-
-    QVBoxLayout *vLayout2 = new QVBoxLayout;
-    vLayout2->addWidget(new QLabel(QObject::tr("PostPersonRecordHttpServerAddress")));//HTTP离线推送识别记录服务器地址
-    vLayout2->addWidget(m_pPostPersonRecordHttpServerAddress);
-
-    QVBoxLayout *vLayout3 = new QVBoxLayout;
-    vLayout3->addWidget(new QLabel(QObject::tr("PostPersonRecordHttpServerPassword")));//HTTP离线推送识别记录服务器密码
-    vLayout3->addWidget(m_pPostPersonRecordHttpServerPassword);
-
-    QVBoxLayout *vLayout4 = new QVBoxLayout;
-    vLayout4->addWidget(new QLabel(QObject::tr("NewRegisteredPersonHttpServerAddress")));
-    vLayout4->addWidget(m_pNewRegisteredPersonHttpServerAddress);
-
-    QVBoxLayout *vLayout5 = new QVBoxLayout;
-    vLayout5->addWidget(new QLabel(QObject::tr("NewRegisteredPersonHttpServerPassword")));
-    vLayout5->addWidget(m_pNewRegisteredPersonHttpServerPassword);
-
-    QVBoxLayout *vLayout6 = new QVBoxLayout;
-    vLayout6->addWidget(new QLabel(QObject::tr("SyncUsersHttpServerAddress")));
-    vLayout6->addWidget(m_pSyncUsersHttpServerAddress);
-
-    QVBoxLayout *vLayout7 = new QVBoxLayout;
-    vLayout7->addWidget(new QLabel(QObject::tr("SyncUsersHttpServerPassword")));
-    vLayout7->addWidget(m_pSyncUsersHttpServerPassword);
-
-    QVBoxLayout *vLayout8 = new QVBoxLayout;
-    vLayout8->addWidget(new QLabel(QObject::tr("UserDetailHttpServerAddress")));
-    vLayout8->addWidget(m_pUserDetailHttpServerAddress);
-
-    QVBoxLayout *vLayout9 = new QVBoxLayout;
-    vLayout9->addWidget(new QLabel(QObject::tr("UserDetailHttpServerPassword")));
-    vLayout9->addWidget(m_pUserDetailHttpServerPassword);
-
-
-    QHBoxLayout *hLayout = new QHBoxLayout;
-    hLayout->addStretch();
-    hLayout->addWidget(m_pConfirmButton);
-    hLayout->addStretch();
-
-    QVBoxLayout *malayout = new QVBoxLayout(q_func());
-    malayout->setSpacing(0);
-    malayout->setContentsMargins(30, 0, 30, 20);
-    malayout->addLayout(vLayout);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout1);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout2);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout3);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout4);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout5);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout6);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout7);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout8);
-    malayout->addSpacing(5);
-    malayout->addLayout(vLayout9);
-    malayout->addSpacing(10);
-    malayout->addLayout(hLayout);
-
-    malayout->addStretch();
+    Q_Q(SrvSetupFrm);
+    
+    // Set main widget object name for styling
+    q->setObjectName("SrvSetupMainWidget");
+    
+    // Main layout
+    m_pMainLayout = new QVBoxLayout(q);
+    m_pMainLayout->setContentsMargins(30, 20, 30, 20);
+    m_pMainLayout->setSpacing(20);
+    
+    // Scroll area for cards
+    m_pScrollArea = new QScrollArea;
+    m_pScrollArea->setWidgetResizable(true);
+    m_pScrollArea->setFrameShape(QFrame::NoFrame);
+    m_pScrollArea->setObjectName("SrvSetupScrollArea");
+    
+    m_pContentWidget = new QWidget;
+    m_pContentWidget->setObjectName("SrvSetupContentWidget");
+    m_pContentLayout = new QVBoxLayout(m_pContentWidget);
+    m_pContentLayout->setContentsMargins(0, 0, 0, 0);
+    m_pContentLayout->setSpacing(12);
+    
+    m_pScrollArea->setWidget(m_pContentWidget);
+    
+    // Create configuration cards
+    m_pHttpServerCard = new ServerConfigCardWidget(
+        QObject::tr("HTTPServerAddress"), 
+        false  // No password field - URL only
+    );
+    
+    m_pPostPersonRecordCard = new ServerConfigCardWidget(
+        QObject::tr("PostPersonRecordHttpServerAddress"),
+        false  // No password field - URL only
+    );
+    
+    m_pNewRegisteredPersonCard = new ServerConfigCardWidget(
+        QObject::tr("NewRegisteredPersonHttpServerAddress"),
+        false  // No password field - URL only
+    );
+    
+    m_pSyncUsersCard = new ServerConfigCardWidget(
+        QObject::tr("SyncUsersHttpServerAddress"),
+        false  // No password field - URL only
+    );
+    
+    m_pUserDetailCard = new ServerConfigCardWidget(
+        QObject::tr("UserDetailHttpServerAddress"),
+        false  // No password field - URL only
+    );
+    
+    // Add cards to content layout
+    m_pContentLayout->addWidget(m_pHttpServerCard);
+    m_pContentLayout->addWidget(m_pPostPersonRecordCard);
+    m_pContentLayout->addWidget(m_pNewRegisteredPersonCard);
+    m_pContentLayout->addWidget(m_pSyncUsersCard);
+    m_pContentLayout->addWidget(m_pUserDetailCard);
+    m_pContentLayout->addStretch();
+    
+    // Confirm button
+    m_pConfirmButton = new QPushButton;
+    m_pConfirmButton->setObjectName("SrvSetupConfirmButton");
+    
+    QHBoxLayout *buttonLayout = new QHBoxLayout;
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(m_pConfirmButton);
+    buttonLayout->addStretch();
+    
+    // Add to main layout
+    m_pMainLayout->addWidget(m_pScrollArea);
+    m_pMainLayout->addLayout(buttonLayout);
 }
 
 void SrvSetupFrmPrivate::InitData()
 {
+    // Setup confirm button
     m_pConfirmButton->setFixedSize(282, 62);
-    m_pConfirmButton->setText(QObject::tr("Save"));//保存 
+    m_pConfirmButton->setText(QObject::tr("Save"));
 }
 
 void SrvSetupFrmPrivate::InitConnect()
@@ -171,53 +267,128 @@ void SrvSetupFrmPrivate::InitConnect()
     QObject::connect(m_pConfirmButton, &QPushButton::clicked, q_func(), &SrvSetupFrm::slotConfirmButton);
 }
 
+// SrvSetupFrm implementation
+SrvSetupFrm::SrvSetupFrm(QWidget *parent)
+    : SettingBaseFrm(parent)
+    , d_ptr(new SrvSetupFrmPrivate(this))
+{
+}
+
+SrvSetupFrm::~SrvSetupFrm()
+{
+}
+
 void SrvSetupFrm::setEnter()
 {
     Q_D(SrvSetupFrm);
 
-    d->m_pHttpServerAddress->setText(ReadConfig::GetInstance()->getSrv_Manager_Address());
-    d->m_pHttpServerPassword->setText(ReadConfig::GetInstance()->getSrv_Manager_Password());
-    d->m_pPostPersonRecordHttpServerAddress->setText(ReadConfig::GetInstance()->getPost_PersonRecord_Address());
-    d->m_pPostPersonRecordHttpServerPassword->setText(ReadConfig::GetInstance()->getPost_PersonRecord_Password());
-    d->m_pNewRegisteredPersonHttpServerAddress->setText(ReadConfig::GetInstance()->getPerson_Registration_Address());
-    d->m_pNewRegisteredPersonHttpServerPassword->setText(ReadConfig::GetInstance()->getPerson_Registration_Password());
-    d->m_pSyncUsersHttpServerAddress->setText(ReadConfig::GetInstance()->getSyncUsersAddress());
-    d->m_pSyncUsersHttpServerPassword->setText(ReadConfig::GetInstance()->getSyncUsersPassword());
-    d->m_pUserDetailHttpServerAddress->setText(ReadConfig::GetInstance()->getUserDetailAddress());
-    d->m_pUserDetailHttpServerPassword->setText(ReadConfig::GetInstance()->getUserDetailPassword());
+    // Load addresses from ReadConfig (user-configured values)
+    d->m_pHttpServerCard->setAddressValue(
+        ReadConfig::GetInstance()->getSrv_Manager_Address()
+    );
+    d->m_pHttpServerCard->setPasswordValue(
+        ReadConfig::GetInstance()->getSrv_Manager_Password()
+    );
+    
+    d->m_pPostPersonRecordCard->setAddressValue(
+        ReadConfig::GetInstance()->getPost_PersonRecord_Address()
+    );
+    d->m_pPostPersonRecordCard->setPasswordValue(
+        ReadConfig::GetInstance()->getPost_PersonRecord_Password()
+    );
+    
+    d->m_pNewRegisteredPersonCard->setAddressValue(
+        ReadConfig::GetInstance()->getPerson_Registration_Address()
+    );
+    d->m_pNewRegisteredPersonCard->setPasswordValue(
+        ReadConfig::GetInstance()->getPerson_Registration_Password()
+    );
+    
+    d->m_pSyncUsersCard->setAddressValue(
+        ReadConfig::GetInstance()->getSyncUsersAddress()
+    );
+    d->m_pSyncUsersCard->setPasswordValue(
+        ReadConfig::GetInstance()->getSyncUsersPassword()
+    );
+    
+    d->m_pUserDetailCard->setAddressValue(
+        ReadConfig::GetInstance()->getUserDetailAddress()
+    );
+    d->m_pUserDetailCard->setPasswordValue(
+        ReadConfig::GetInstance()->getUserDetailPassword()
+    );
 
-    // Add this debug log
-    LogD("Loading Person Registration URL: %s\n", 
-         ReadConfig::GetInstance()->getPerson_Registration_Address().toStdString().c_str());
-
+    LogD("Server Setup page entered - loaded current configuration from ReadConfig\n");
 }
-
 
 void SrvSetupFrm::slotConfirmButton()
 {
-	Q_D(SrvSetupFrm);
-	ReadConfig::GetInstance()->setSrv_Manager_Address(d->m_pHttpServerAddress->text());
-	ReadConfig::GetInstance()->setSrv_Manager_Password(d->m_pHttpServerPassword->text());
-	ReadConfig::GetInstance()->setPost_PersonRecord_Address(d->m_pPostPersonRecordHttpServerAddress->text());
-	ReadConfig::GetInstance()->setPost_PersonRecord_Password(d->m_pPostPersonRecordHttpServerPassword->text());
-    ReadConfig::GetInstance()->setPerson_Registration_Address(d->m_pNewRegisteredPersonHttpServerAddress->text());
-    ReadConfig::GetInstance()->setPerson_Registration_Password(d->m_pNewRegisteredPersonHttpServerPassword->text());
-    ReadConfig::GetInstance()->setSyncUsersAddress(d->m_pSyncUsersHttpServerAddress->text());
-    ReadConfig::GetInstance()->setSyncUsersPassword(d->m_pSyncUsersHttpServerPassword->text());
-    ReadConfig::GetInstance()->setUserDetailAddress(d->m_pUserDetailHttpServerAddress->text());
-    ReadConfig::GetInstance()->setUserDetailPassword(d->m_pUserDetailHttpServerPassword->text());
-	ReadConfig::GetInstance()->setSaveConfig();
-
-
+    Q_D(SrvSetupFrm);
+    
+    // Save BOTH addresses and passwords to ReadConfig
+    // These values will be used throughout the application
+    
+    ReadConfig::GetInstance()->setSrv_Manager_Address(
+        d->m_pHttpServerCard->getAddressValue()
+    );
+    ReadConfig::GetInstance()->setSrv_Manager_Password(
+        d->m_pHttpServerCard->getPasswordValue()
+    );
+    
+    ReadConfig::GetInstance()->setPost_PersonRecord_Address(
+        d->m_pPostPersonRecordCard->getAddressValue()
+    );
+    ReadConfig::GetInstance()->setPost_PersonRecord_Password(
+        d->m_pPostPersonRecordCard->getPasswordValue()
+    );
+    
+    ReadConfig::GetInstance()->setPerson_Registration_Address(
+        d->m_pNewRegisteredPersonCard->getAddressValue()
+    );
+    ReadConfig::GetInstance()->setPerson_Registration_Password(
+        d->m_pNewRegisteredPersonCard->getPasswordValue()
+    );
+    
+    ReadConfig::GetInstance()->setSyncUsersAddress(
+        d->m_pSyncUsersCard->getAddressValue()
+    );
+    ReadConfig::GetInstance()->setSyncUsersPassword(
+        d->m_pSyncUsersCard->getPasswordValue()
+    );
+    
+    ReadConfig::GetInstance()->setUserDetailAddress(
+        d->m_pUserDetailCard->getAddressValue()
+    );
+    ReadConfig::GetInstance()->setUserDetailPassword(
+        d->m_pUserDetailCard->getPasswordValue()
+    );
+    
+    // Log the saved configuration
+    LogD("Configuration saved - user-configured addresses and passwords:\n");
+    LogD("  Main Server: %s\n", d->m_pHttpServerCard->getAddressValue().toStdString().c_str());
+    LogD("  Person Record: %s\n", d->m_pPostPersonRecordCard->getAddressValue().toStdString().c_str());
+    LogD("  Person Registration: %s\n", d->m_pNewRegisteredPersonCard->getAddressValue().toStdString().c_str());
+    LogD("  Sync Users: %s\n", d->m_pSyncUsersCard->getAddressValue().toStdString().c_str());
+    LogD("  User Detail: %s\n", d->m_pUserDetailCard->getAddressValue().toStdString().c_str());
+    
+    // Save configuration to persistent storage
+    ReadConfig::GetInstance()->setSaveConfig();
+    
+    // Show success message (optional)
+    QMessageBox::information(this, 
+                           tr("Success"),
+                           tr("Server configuration saved successfully!\n\nThe new URLs will be used for all server communications."));
 }
 
 void SrvSetupFrm::slotIemClicked(QListWidgetItem */*item*/)
 {
-
 }
-#ifdef SCREENCAPTURE  //ScreenCapture  
+
+#ifdef SCREENCAPTURE
 void SrvSetupFrm::mouseDoubleClickEvent(QMouseEvent* event)
 {
     grab().save(QString("/mnt/user/screenshot/%1.png").arg(this->metaObject()->className()),"png");    
 }
-#endif 
+#endif
+
+#include "SrvSetupFrm.moc" // For ServerConfigCardWidget Q_OBJECT

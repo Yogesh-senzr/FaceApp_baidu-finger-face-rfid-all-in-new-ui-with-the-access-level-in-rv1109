@@ -17,6 +17,7 @@ public:
     static int Uart_ReadUart2(unsigned int index, unsigned char *pData,unsigned int nDataSize);    
     static void Uart_ReadFlush(unsigned int index);
     static int Uart_CloseUartDev(unsigned int nUartDevIndex);
+    static int Uart_GetFileDescriptor(unsigned int index); 
 };
 }
 

@@ -18,6 +18,10 @@
 
 #include <QtCore/QSettings>
 #include <QtCore/QThread>
+#include <QDebug>
+
+#define DEFAULT_DOOR_ID "28(TM-10, B-0, BT-10, S-0, P-0)"
+#define DEFAULT_ACCESS_LEVEL "2"
 
 typedef struct
 {
@@ -111,10 +115,11 @@ typedef struct
     int Type;
     int Wiggins;
     int Timer;
-	int Relay;
+    int Relay;
     QString MustOpenMode;
     QString OptionalOpenMode;
     QString Password;
+    QString AccessLevel;  // ← ADD THIS
 }Door_t;
 
 typedef struct
@@ -200,10 +205,13 @@ private:
     Identity_Manager_t mIdentity_Manager_t{};
     HomeDisplay_t mHomeDisplay_t{};
     DeviceInfo_t mDeviceInfo_t{};  // Add this member
+    
 private:
     int mTempSensorType;
     int mIrCameraRotation;
     int mRgbCameraRotation;
+    int mSyncEnabled;  // Add this member
+    QString m_heartbeatDoorId; 
 private:
     int mPlatformType;
     int mWiegandReverse;
@@ -223,6 +231,7 @@ ReadConfigPrivate::ReadConfigPrivate(ReadConfig *dd)
     , mFaceRecognVedor(1)
 {
     this->Init();
+    m_heartbeatDoorId = DEFAULT_DOOR_ID;
 }
 
 ReadConfig::ReadConfig(QObject *parent)
@@ -278,45 +287,48 @@ void ReadConfigPrivate::Init()
     mLAN_t.DNS = IniFile.value("DNS",  "8.8.8.8").toString();
     IniFile.endGroup();
 
+     // MODIFIED: Use hardcoded addresses instead of reading from INI
     IniFile.beginGroup("Srv_Manager");
-    mSrv_Manager_t.Address = IniFile.value("Address",  "").toString();
-    mSrv_Manager_t.Password = IniFile.value("Password",  "12345678").toString();
-    IniFile.endGroup();
+mSrv_Manager_t.Address = IniFile.value("Address", "https://appv4.samayaccess.com/directus/flows/trigger/6606d8bd-9fc1-4aeb-8a62-997662ad434a").toString();
+mSrv_Manager_t.Password = IniFile.value("Password", "12345678").toString();
+IniFile.endGroup();
 
-    IniFile.beginGroup("Post_PersonRecord");
-    mPost_PersonRecord_t.Address = IniFile.value("Address",  "").toString();
-    mPost_PersonRecord_t.Password = IniFile.value("Password",  "").toString();
-    IniFile.endGroup();
+IniFile.beginGroup("Post_PersonRecord");
+mPost_PersonRecord_t.Address = IniFile.value("Address", "https://appv4.samayaccess.com/directus/flows/trigger/340e7b83-35c7-4f0b-9b0c-5cbf753cb43b").toString();
+mPost_PersonRecord_t.Password = IniFile.value("Password", "").toString();
+IniFile.endGroup();
 
-    IniFile.beginGroup("Person_Registration");
-    mPerson_Registration_t.Address = IniFile.value("Address",  "").toString();
-    mPerson_Registration_t.Password = IniFile.value("Password",  "").toString();
-    IniFile.endGroup();
+IniFile.beginGroup("Person_Registration");
+mPerson_Registration_t.Address = IniFile.value("Address", "https://appv4.samayaccess.com/directus/flows/trigger/c67721fc-dee6-46b8-8016-6cfc7da20d85").toString();
+mPerson_Registration_t.Password = IniFile.value("Password", "").toString();
+IniFile.endGroup();
 
-    IniFile.beginGroup("SyncUsers");
-    mSyncUsers_t.Address = IniFile.value("Address",  "").toString();
-    mSyncUsers_t.Password = IniFile.value("Password",  "").toString();
-    IniFile.endGroup();
+IniFile.beginGroup("SyncUsers");
+mSyncUsers_t.Address = IniFile.value("Address", "https://appv4.samayaccess.com/directus/flows/trigger/d81b8a1f-6b1f-43eb-939d-22cc5af7e670").toString();
+mSyncUsers_t.Password = IniFile.value("Password", "").toString();
+IniFile.endGroup();
 
-    IniFile.beginGroup("UserDetail");
-    mUserDetail_t.Address = IniFile.value("Address",  "").toString();
-    mUserDetail_t.Password = IniFile.value("Password",  "").toString();
-    IniFile.endGroup();
-// Add this section with the other IniFile.beginGroup sections
+IniFile.beginGroup("UserDetail");
+mUserDetail_t.Address = IniFile.value("Address", "https://appv4.samayaccess.com/directus/flows/trigger/a8465e3d-3b4f-42c7-8f89-fd64571d40fd").toString();
+mUserDetail_t.Password = IniFile.value("Password", "").toString();
+IniFile.endGroup();
+
+
+    // Add this section with the other IniFile.beginGroup sections
     IniFile.beginGroup("DeviceInfo");
-// Try to get device ID from system
-mDeviceInfo_t.serialNumber = IniFile.value("SerialNumber", "DEFAULT_SERIAL").toString();
-if (mDeviceInfo_t.serialNumber.isEmpty() || mDeviceInfo_t.serialNumber == "DEFAULT_SERIAL") {
-    QFile file("/sys/class/net/eth0/address");
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QString mac = QString::fromUtf8(file.readAll()).trimmed();
-        file.close();
-        if (!mac.isEmpty()) {
-            mDeviceInfo_t.serialNumber = "RV1109-" + mac.replace(":", "");
+    // Try to get device ID from system
+    mDeviceInfo_t.serialNumber = IniFile.value("SerialNumber", "DEFAULT_SERIAL").toString();
+    if (mDeviceInfo_t.serialNumber.isEmpty() || mDeviceInfo_t.serialNumber == "DEFAULT_SERIAL") {
+        QFile file("/sys/class/net/eth0/address");
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QString mac = QString::fromUtf8(file.readAll()).trimmed();
+            file.close();
+            if (!mac.isEmpty()) {
+                mDeviceInfo_t.serialNumber = "RV1109-" + mac.replace(":", "");
+            }
         }
     }
-}
-IniFile.endGroup();
+    IniFile.endGroup();
 
     IniFile.beginGroup("Language");
     mLanguage_t.Mode = IniFile.value("Mode",  0).toInt();
@@ -343,13 +355,15 @@ IniFile.endGroup();
     IniFile.endGroup();
     
     IniFile.beginGroup("Door");
-    mDoor_t.Type = IniFile.value("Type",  1).toInt();
-    mDoor_t.Wiggins = IniFile.value("Wiggins",  1).toInt();
-    mDoor_t.Timer = IniFile.value("Timer",  1).toInt();
-    mDoor_t.MustOpenMode = IniFile.value("MustOpenMode", "2").toString();
-    mDoor_t.OptionalOpenMode = IniFile.value("OptionalOpenMode",  "").toString();
-    mDoor_t.Password = IniFile.value("Password",  "").toString();
-    IniFile.endGroup();
+mDoor_t.Type = IniFile.value("Type",  1).toInt();
+mDoor_t.Wiggins = IniFile.value("Wiggins",  1).toInt();
+mDoor_t.Timer = IniFile.value("Timer",  1).toInt();
+mDoor_t.Relay = IniFile.value("Relay", 0).toInt();  
+mDoor_t.MustOpenMode = IniFile.value("MustOpenMode", "1").toString();
+mDoor_t.OptionalOpenMode = IniFile.value("OptionalOpenMode",  "").toString();
+mDoor_t.Password = IniFile.value("Password",  "").toString();
+mDoor_t.AccessLevel = IniFile.value("AccessLevel", DEFAULT_ACCESS_LEVEL).toString();  // ← ADD THIS
+IniFile.endGroup();
 
     IniFile.beginGroup("Timer_Manager");
     mTimer_Manager_t.autoTime = IniFile.value("autoTime",  1).toInt();
@@ -374,16 +388,16 @@ IniFile.endGroup();
     mIdentity_Manager_t.Identifycm = IniFile.value("Identifycm",  1).toInt();
 
     mIdentity_Manager_t.Thanthreshold = IniFile.value("Thanthreshold",  0.8).toFloat();
-    mIdentity_Manager_t.idcardThanthreshold = IniFile.value("idcardThanthreshold",  0.7).toFloat();
+    mIdentity_Manager_t.idcardThanthreshold = IniFile.value("idcardThanthreshold",  0.9).toFloat();
     //测温模式
     mIdentity_Manager_t.TemperatureMode = IniFile.value("TemperatureMode",  0).toInt();
     IniFile.endGroup();
 
     IniFile.beginGroup("HomeDisplay");
     //显示设备号
-    mHomeDisplay_t.DisplaySnNum = IniFile.value("DisplaySnNum",  1).toInt();
+    mHomeDisplay_t.DisplaySnNum = IniFile.value("DisplaySnNum",  0).toInt();
     //显示MAC地址
-    mHomeDisplay_t.DisplayMac = IniFile.value("DisplayMac",  1).toInt();
+    mHomeDisplay_t.DisplayMac = IniFile.value("DisplayMac",  0).toInt();
     //显示IP地址
     mHomeDisplay_t.DisplayIP = IniFile.value("DisplayIP",  1).toInt();
     //显示注册人数
@@ -395,6 +409,10 @@ IniFile.endGroup();
 
     IniFile.beginGroup("Login");
     mLoginPassword = IniFile.value("LoginPassword",  "123456").toString();
+    IniFile.endGroup();
+
+    IniFile.beginGroup("Sync_Settings");
+    mSyncEnabled = IniFile.value("EnableSync", 1).toInt(); // Default to enabled (1)
     IniFile.endGroup();
 }
 
@@ -434,6 +452,7 @@ void ReadConfig::setReadConfig()
     /*开门方式*/
     qXLApp->GetIdentityManagement()->setDoor_MustOpenMode(d->mDoor_t.MustOpenMode);
     qXLApp->GetIdentityManagement()->setDoor_OptionalOpenMode(d->mDoor_t.OptionalOpenMode);
+    qXLApp->GetIdentityManagement()->setDeviceAccessLevel(d->mDoor_t.AccessLevel);
     //qXLApp->GetIdentityManagement()->setDoor_hshours(d->mDoor_t.hshours);
     //qXLApp->GetFaceMainFrm()-> setHomeDisplay_DoorLock(d->mDoor_t.Password>"");
     //补光模式
@@ -522,14 +541,14 @@ void ReadConfig::setSaveConfig()
     IniFile.endGroup();      
 
     IniFile.beginGroup("Door");
-    IniFile.setValue("Type", d->mDoor_t.Type);
-    IniFile.setValue("Wiggins", d->mDoor_t.Wiggins);
-    IniFile.setValue("Timer", d->mDoor_t.Timer);
-    IniFile.setValue("MustOpenMode",  d->mDoor_t.MustOpenMode);
-    IniFile.setValue("OptionalOpenMode",  d->mDoor_t.OptionalOpenMode);
-    IniFile.setValue("Password",  d->mDoor_t.Password);
-
-    IniFile.endGroup();
+IniFile.setValue("Type", d->mDoor_t.Type);
+IniFile.setValue("Wiggins", d->mDoor_t.Wiggins);
+IniFile.setValue("Timer", d->mDoor_t.Timer);
+IniFile.setValue("MustOpenMode",  d->mDoor_t.MustOpenMode);
+IniFile.setValue("OptionalOpenMode",  d->mDoor_t.OptionalOpenMode);
+IniFile.setValue("Password",  d->mDoor_t.Password);
+IniFile.setValue("AccessLevel",  d->mDoor_t.AccessLevel);  // ← ADD THIS
+IniFile.endGroup();
 
     IniFile.beginGroup("Timer_Manager");
     IniFile.setValue("autoTime", d->mTimer_Manager_t.autoTime);
@@ -579,9 +598,9 @@ void ReadConfig::setSaveConfig()
     IniFile.setValue("SerialNumber", d->mDeviceInfo_t.serialNumber);
     IniFile.endGroup();
 
-    IniFile.beginGroup("Sync_Settings");
-    IniFile.setValue("SyncEnabled", 0); // Default OFF state
-    IniFile.endGroup();
+IniFile.beginGroup("Sync_Settings");
+IniFile.setValue("EnableSync", 1); // Default ON state - FIXED key name
+IniFile.endGroup();
 
 }
 
@@ -703,6 +722,7 @@ QString ReadConfig::getWIFI_Password() const
 {
     return d_func()->mWIFI_t.Password;
 }
+
 
 void ReadConfig::setWIFI_Name(const QString &name)
 {
@@ -1027,6 +1047,19 @@ void ReadConfig::setDoor_Password(const QString &password)
     d->mDoor_t.Password = password;
 }
 
+QString ReadConfig::getDoor_AccessLevel() const
+{
+    return d_func()->mDoor_t.AccessLevel;
+}
+
+void ReadConfig::setDoor_AccessLevel(const QString &level)
+{
+    Q_D(ReadConfig);
+    d->mDoor_t.AccessLevel = level;
+    qXLApp->GetIdentityManagement()->setDeviceAccessLevel(level);
+}
+
+
 int ReadConfig::getTimer_Manager_autoTime() const
 {
     return d_func()->mTimer_Manager_t.autoTime;
@@ -1236,6 +1269,97 @@ void ReadConfig::setHomeDisplay_DisplaySnNum(const int &show)
     qXLApp->GetFaceMainFrm()-> setHomeDisplay_SnNum(d->mHomeDisplay_t.DisplaySnNum);
 }
 
+QString ReadConfig::getHeartbeat_DoorId() const
+{
+    Q_D(const ReadConfig);
+    return d->m_heartbeatDoorId.isEmpty() ? QString(DEFAULT_DOOR_ID) : d->m_heartbeatDoorId;
+}
+
+void ReadConfig::setHeartbeat_DoorId(const QString& doorId)
+{
+    Q_D(ReadConfig);
+    d->m_heartbeatDoorId = doorId;
+    qDebug() << "DEBUG: ReadConfig - Set heartbeat doorId:" << doorId;
+}
+
+QString ReadConfig::getHeartbeat_TenantId()
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    QString value = IniFile.value("TenantId", "").toString();
+    IniFile.endGroup();
+    return value;
+}
+
+void ReadConfig::setHeartbeat_TenantId(const QString& value)
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    IniFile.setValue("TenantId", value);
+    IniFile.endGroup();
+    IniFile.sync();
+}
+
+QString ReadConfig::getHeartbeat_AttendanceMode()
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    QString value = IniFile.value("AttendanceMode", "").toString();
+    IniFile.endGroup();
+    return value;
+}
+
+void ReadConfig::setHeartbeat_AttendanceMode(const QString& value)
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    IniFile.setValue("AttendanceMode", value);
+    IniFile.endGroup();
+    IniFile.sync();
+}
+
+QString ReadConfig::getHeartbeat_DeviceStatus()
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    QString value = IniFile.value("DeviceStatus", "approved").toString();
+    IniFile.endGroup();
+    return value;
+}
+
+void ReadConfig::setHeartbeat_DeviceStatus(const QString& value)
+{
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
+    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+    IniFile.beginGroup("Heartbeat");
+    IniFile.setValue("DeviceStatus", value);
+    IniFile.endGroup();
+    IniFile.sync();
+}
+
 void ReadConfig::setHomeDisplay_DisplayMac(const int &show)
 {//显示mac地址
     Q_D(ReadConfig);
@@ -1325,15 +1449,46 @@ void ReadConfig::setDeviceSerialNumber(const QString &serialNumber)
 
 int ReadConfig::getSyncEnabled() const
 {
-    QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
-    return IniFile.value("Sync_Settings/EnableSync", 0).toInt(); // Default OFF
+    return d_func()->mSyncEnabled;
 }
 
 void ReadConfig::setSyncEnabled(int state)
 {
+    Q_D(ReadConfig);
+    d->mSyncEnabled = state;
+    
+    // Immediately save to file
+#ifdef Q_OS_WIN
+    QSettings IniFile("./parameters.ini", QSettings::IniFormat);
+#else
     QSettings IniFile("/mnt/user/parameters.ini", QSettings::IniFormat);
+#endif
+
     IniFile.beginGroup("Sync_Settings");
     IniFile.setValue("EnableSync", state);
     IniFile.endGroup();
     IniFile.sync();
+    
+    // Debug output
+    qDebug() << "Sync state saved:" << state << "to" << IniFile.fileName();
+}
+
+bool ReadConfig::getTestVerifiedMessage() const
+{
+    return m_testVerifiedMessage;
+}
+
+bool ReadConfig::getTestIconMessage() const
+{
+    return m_testIconMessage;
+}
+
+void ReadConfig::setTestVerifiedMessage(bool enable)
+{
+    m_testVerifiedMessage = enable;
+}
+
+void ReadConfig::setTestIconMessage(bool enable)
+{
+    m_testIconMessage = enable;
 }

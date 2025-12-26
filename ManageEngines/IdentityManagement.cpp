@@ -35,6 +35,7 @@
 #include <curl/curl.h>
 
 #include <QMetaEnum>
+#include <QtCore/QTime> 
 
 #define DateTime QDateTime::currentDateTime().toString("yyyy/MM/dd hh:mm:ss")
 #define Today QDateTime::currentDateTime().toString("yyyy-MM-dd")
@@ -388,7 +389,7 @@ void IdentityManagementPrivate::CheckNotMaskMode(const CORE_FACE_S &face)
             }
         }
     }
-}
+} 
 
 bool IdentityManagementPrivate::CheckLiveness(const CORE_FACE_S &face)
 {//判断用户模式是否开启活体检测
@@ -535,9 +536,10 @@ bool IdentityManagementPrivate::CheckDoorOpenMode(IdentifyFaceRecord_t &t)
 
     if(door_mode.size() == 0 && optional_mode.size() == 0)
     {
-    	//TODO 刷脸不可取消，如果刷脸不是必须满足，为了流程顺利走下去需强制配置刷脸
-        //如果全不选,则默认是必选之"刷脸",此段移到UI 控制
-    	door_mode = Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE);
+        // TODO: Face recognition cannot be cancelled. If face recognition is not mandatory,
+        // force configuration of face recognition for smooth process flow
+        // If nothing is selected, default to BOTH IC card AND face recognition
+        door_mode = Door_OpenModeToSTR(_DOOR_OPEN_MODE::ICCARD) + "&" + Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE);
     }
 
     printf(">>>>>%s,%s,%d CheckPassageOfTime\n",__FILE__,__func__,__LINE__);
@@ -589,7 +591,7 @@ bool IdentityManagementPrivate::CheckDoorOpenMode(IdentifyFaceRecord_t &t)
     if(door_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE))
              && !process.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
     {//刷脸,已经实别但是没有处理过        
-         emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("FaceRecognitioning"));//正在识别人脸
+         emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, "");//正在识别人脸
     }
     //THERMOMETRY = 3,//测温    
     if(door_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY))
@@ -598,17 +600,6 @@ bool IdentityManagementPrivate::CheckDoorOpenMode(IdentifyFaceRecord_t &t)
         YNH_LJX::Audio::Audio_PlayTempabnormalPcm("zh");
         emit q_func()->sigTipsMessage(ALARM_MESSAGE, 1, QObject::tr("DOOR_OPEN_MODE_THERMOMETRY_Hint"));//体温异常
 
-    }
-    //MASK = 4,//口罩
-    if(  door_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::MASK))  )
-    {//检测口罩
-        if (t.face.attr_info.face_mask != 1)
-        {
-            //YNH_LJX::Audio::Audio_PlayUnbtMaskPcm("zh");//语音提示太频繁了
-            this->CheckMaskMode(t.face);
-            emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("DOOR_OPEN_MODE_MASK_Hint"));//请佩戴口罩 Please wear a mask.
-        } else t.process_state.append("&4");
-           
     }
     //QRCODE = 5,//二维码
     if(door_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::QRCODE))
@@ -746,7 +737,7 @@ bool IdentityManagementPrivate::CheckDoorOpenMode(IdentifyFaceRecord_t &t)
     {//刷脸,已经实别但是没有处理过
          if (t.FaceType != NOT_STRANGER)
            t.process_state.append("&2");
-         emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("FaceRecognitioning"));//正在识别人脸
+         emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, "");//正在识别人脸
     }
     //THERMOMETRY = 3,//测温    
     if(optional_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY))
@@ -872,17 +863,42 @@ void IdentityManagement::slotIdentityCardFullInfo(const QString name,const QStri
 void IdentityManagement::slotMatchCoreFace(const CORE_FACE_S face)
 {
     Q_D(IdentityManagement);
+    
+    qDebug() << "📄 NEW FACE DETECTED - Clearing old text at" << QTime::currentTime().toString("hh:mm:ss.zzz");
+    emit sigTipsMessage(BOTTOM_MESSAGE, 3, "");
+    
     d->sync.lock();
-    //增加到任务队列， 先进先出  
-    //printf(">>>>%s,%s,%d,FaceImgPath=%s\n",__FILE__,__func__,__LINE__,face.FaceImgPath);  
-    switch(face.attr_info.face_mask)
-    {
-        case 0:   
-            d->CheckNotMaskMode(face);//没口罩
-            break;
-        case 1:d->CheckMaskMode(face);//有口罩
-            break;
+    
+    // CHECK DOOR MODE FIRST
+    QString doorMode = ReadConfig::GetInstance()->getDoor_MustOpenMode();
+    
+    if (doorMode == "2" || doorMode == "1") {
+        // DOOR MODE 1 & 2: Skip all validation, direct processing
+        LogD("%s %s[%d] === DOOR MODE %s === Skipping mask/quality validation - direct processing\n", 
+             __FILE__, __FUNCTION__, __LINE__, doorMode.toStdString().c_str());
+             
+        // Set basic face data and go straight to search
+        if(d->mIdentifyFaceRecord.time_Start == 0) {
+            d->mIdentifyFaceRecord.face = face;
+            d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();
+            d->mIdentifyFaceRecord.face_aids = d->mMustOpenMode;
+            d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_SEARCH;
+            
+            // Direct to recognition
+            d->m_ThreadObjs.at(0)->SafeResolverData(d->mIdentifyFaceRecord.face);
+        }
+    } else {
+        // OTHER DOOR MODES: Use existing validation logic
+        switch(face.attr_info.face_mask) {
+            case 0:   
+                d->CheckNotMaskMode(face);
+                break;
+            case 1:
+                d->CheckMaskMode(face);
+                break;
+        }
     }
+    
     d->sync.unlock();
     d->pauseCond.wakeOne();
 }
@@ -912,12 +928,19 @@ void IdentityManagement::slotDisClearMessage()
       emit sigTipsMessage(ALARM_MESSAGE, 2, QObject::tr(""));
     emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr(""));
     d->mFirstTime = 1; //首次通行
+        // ADD THIS LINE TO CLEAR PERSON IMAGE:
+    emit sigClearPersonImage();
 
 }
-
 void IdentityManagement::slotDisMissMessage(const bool state)
 {
     Q_D(IdentityManagement);
+
+    // ADD THESE LINES AT THE BEGINNING:
+    if (!state) {  // No face detected
+        emit sigTipsMessage(BOTTOM_MESSAGE, 3, "");
+    } else {
+    }
 
     if(state)return;
 
@@ -926,7 +949,6 @@ void IdentityManagement::slotDisMissMessage(const bool state)
     {
         slotDisClearMessage();
     }
-
 }
 
 void IdentityManagement::slotReadIccardNum(const QString iccard)
@@ -941,113 +963,364 @@ void IdentityManagement::slotReadIccardNum(const QString iccard)
 		  Toast::showTips(QRect(nDeskW - 300, nDeskH / 2 + 100, 320, 50), iccard, 8);
 	}
      
-    int passtimer = ((double)clock()- d->mIdentifyFaceRecord.time_Start)/1000/1000;   // 1000/1000;  CLOCK_REALTIME
+    int passtimer = ((double)clock()- d->mIdentifyFaceRecord.time_Start)/1000/1000;
 
-    //可选的开门方式中有刷卡，则自行判断下刷卡的权限
     QString door_mode = d->mMustOpenMode;
     QString optional_mode = d->mOptionalOpenMode;    
     QString process = d->mIdentifyFaceRecord.process_state;    
     LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-    //提示刷卡
+    
     if (iccard.isEmpty())
-    {    //卡号是空的， 提示刷卡
-        emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("Plsswipe"));//请刷卡
-    } else
+    {
+        emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("Plsswipe"));
+    } 
+    else
     {   
-
         LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
         d->micCard.number = iccard;    
         d->mIdentifyFaceRecord.face_iccardnum = iccard;       
          
-        //查询卡是否存
         PERSONS_s info;
         if (RegisteredFacesDB::GetInstance()->selectICcardPerson(iccard, info))
         {
-
-            LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-            //if (info.iccard == iccard)
-            if (QString::compare(iccard.toStdString().c_str(),info.iccard.toStdString().c_str())==0)
+            if (QString::compare(iccard.toStdString().c_str(), info.iccard.toStdString().c_str()) == 0)
             {
-                //在数据库中有记录               
+                int userAccessLevel = info.access_level;
+                
+                LogD("%s %s[%d] RFID Check - User: %s, EmployeeID: %s, DB access_level: %d, DeviceLevel: %s\n",
+                     __FILE__, __FUNCTION__, __LINE__,
+                     info.name.toStdString().c_str(),
+                     info.idcard.toStdString().c_str(),
+                     userAccessLevel,
+                     m_deviceAccessLevel.toStdString().c_str());
+                
+                // CHECK ACCESS LEVEL FIRST
+                if (!CheckAccessLevelFromDB(userAccessLevel)) {
+                    LogD("%s %s[%d] === RFID ACCESS DENIED - Treating as STRANGER ===\n", 
+                         __FILE__, __FUNCTION__, __LINE__);
+                    
+                    // Treat as STRANGER - don't set any personal info
+                    d->mIdentifyFaceRecord.FaceType = STRANGER;
+                    d->mIdentifyFaceRecord.face_name = QObject::tr("stranger");
+                    
+                    // Show stranger message
+                    emit sigTipsMessage(BOTTOM_MESSAGE, 3, 
+                        QObject::tr("<font color=\"#FFFF33\">stranger</font>"));
+                    
+                    YNH_LJX::Audio::Audio_PlayCustomerPcm("zh", "AccessDenied.wav", true);
+                    
+                    d->sync.lock();
+                    d->micCard = {iccard, QDateTime::currentDateTime().toTime_t()};
+                    d->sync.unlock();
+                    return;
+                }
+                
+                LogD("%s %s[%d] === RFID ACCESS GRANTED - Showing recognized person ===\n", 
+                     __FILE__, __FUNCTION__, __LINE__);
+                
+                // ACCESS GRANTED - Set up recognition data
                 LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
                 d->mIdentifyFaceRecord.process_state.append("&1");  
                 d->mIdentifyFaceRecord.FaceType = NOT_STRANGER;
                 d->mIdentifyFaceRecord.face_name = info.name;
                 d->mIdentifyFaceRecord.face_personid = info.uuid.toInt();
-                d->mIdentifyFaceRecord.face_uuid = info.uuid;         
+                d->mIdentifyFaceRecord.face_uuid = info.uuid;
+                d->mIdentifyFaceRecord.face_idcardnum = info.idcard;
                 d->mIdentifyFaceRecord.FaceImgPath="/mnt/user/face_crop_image";         
 
                 if(d->mIdentifyFaceRecord.time_Start == 0)
-                {//默认状态
-                    d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();//解发超时起始时间
+                {
+                    d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();
                 }
+                
                 LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
                 emit sigTipsMessage(TOP_MESSAGE, 1, "");
 
-                //没有必选项,只有可选项,且可选项包含 "刷卡"                
-                d->mIdentifyFaceRecord.Finish = false;           
+                d->mIdentifyFaceRecord.Finish = false;
+                
                 if (d->CanOpenDoor())
                 {
-                #if 0    
-                    if (d->mFirstTime ==1 ) {}
-                    else if  (d->mIdentifyInterval &&  ( passtimer <d->mIdentifyInterval  ) )
-                    {
-                        //要时间间隔 
-                        return;
-                    }    
-                #endif        
-                    
-                    //开门
-                                       
-                   LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-                    if (!d->mIdentifyFaceRecord.face_name.isEmpty() &&  d->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
-                    {                      
-                      emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+d->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
-        
-                      
-                      if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
-	                    YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
-                    }
                     LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-                   #if 1 //在此句
-                    PersonRecordToDB::GetInstance()->appRecordData(d->mIdentifyFaceRecord);
-                   #endif  
+                    if (!d->mIdentifyFaceRecord.face_name.isEmpty() && d->mIdentifyFaceRecord.face_name != QObject::tr("stranger"))
+                    {                      
+                        QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+                            d->mIdentifyFaceRecord.face_name,
+                            d->mIdentifyFaceRecord.face_idcardnum
+                        );
+                        emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
+                        
+                        if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || 
+                            optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
+                        {
+                            YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
+                        }
+                    }
 
-					int iRelay =  ReadConfig::GetInstance()->getDoor_Relay();
-					LogD(">>>%s,%s,%d,iRelay=%d\n",__FILE__,__func__,__LINE__,iRelay);
-					if (iRelay == 1) //1:常开
-					{
-						YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
-					}
-					else if (iRelay == 2) //2:常闭
-					{        
-						YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
-					} 
-					else 					
-						YNH_LJX::Utils_Door::GetInstance()->OpenDoor(iccard);
+                    emit sigRecognizedPerson(
+                        d->mIdentifyFaceRecord.face_name,
+                        d->mIdentifyFaceRecord.face_personid,
+                        d->mIdentifyFaceRecord.face_uuid,
+                        d->mIdentifyFaceRecord.face_idcardnum
+                    );
+                    
+                    LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
+                    PersonRecordToDB::GetInstance()->appRecordData(d->mIdentifyFaceRecord);
+
+                    int iRelay = ReadConfig::GetInstance()->getDoor_Relay();
+                    LogD(">>>%s,%s,%d,iRelay=%d\n",__FILE__,__func__,__LINE__,iRelay);
+                    if (iRelay == 1)
+                    {
+                        YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
+                    }
+                    else if (iRelay == 2)
+                    {        
+                        YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
+                    } 
+                    else 					
+                        YNH_LJX::Utils_Door::GetInstance()->OpenDoor(iccard);
+                    
                     LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
                     
                     slotDisClearMessage();
                     d->mFirstTime+=1;
                     d->mIdentifyFaceRecord.Finish = true;                    
                 }
-
-            } else
+            } 
+            else
             {
                 LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-                emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("CardNumberNotExist"));//卡号不存在
+                emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("CardNumberNotExist"));
             }
-        } else
+        } 
+        else
         {
             LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
-            emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("ErrorQueryingData"));//查询数据出错
+            emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("ErrorQueryingData"));
         }
     }
-	LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
+    
+    LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
     d->sync.lock();
     d->micCard = {iccard, QDateTime::currentDateTime().toTime_t()};
     d->sync.unlock();
     LogD("%s %s[%d]  \n",__FILE__,__FUNCTION__,__LINE__);
+}
+
+void IdentityManagement::slotFingerprintMatched(const QString &fingerIdStr, 
+                                                 const QString &name, 
+                                                 const int &confidence)
+{
+    Q_D(IdentityManagement);
+    
+    // ✅✅✅ FIRST LINE OF FUNCTION - PROVES IT WAS CALLED ✅✅✅
+    LogD("\n\n");
+    LogD("████████████████████████████████████████████████████████████\n");
+    LogD("█                                                          █\n");
+    LogD("█  📞 SLOT CALLED: slotFingerprintMatched()               █\n");
+    LogD("█                                                          █\n");
+    LogD("████████████████████████████████████████████████████████████\n");
+    LogD("\n");
+    
+    LogD("%s %s[%d] Function entry\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("Thread: %p (UI thread: %p)\n", QThread::currentThread(), qApp->thread());
+    
+    LogD("Received parameters:\n");
+    LogD("  fingerIdStr = \"%s\"\n", fingerIdStr.toStdString().c_str());
+    LogD("  name = \"%s\"\n", name.toStdString().c_str());
+    LogD("  confidence = %d\n", confidence);
+    
+    // Convert finger ID string to integer
+    int fingerId = fingerIdStr.toInt();
+    LogD("Converted finger ID: %d\n", fingerId);
+    
+    // Query database to get complete person information
+    LogD("Querying database for finger ID %d...\n", fingerId);
+    
+    PERSONS_t person;
+    if (!RegisteredFacesDB::GetInstance()->GetPersonByFingerId(fingerId, person)) {
+        LogE("❌ ERROR: Finger ID %d not found in database!\n", fingerId);
+        emit sigTipsMessage(BOTTOM_MESSAGE, 3, 
+            QObject::tr("<font color=\"red\">Database Error: User Not Found</font>"));
+        return;
+    }
+    
+    LogD("✅ Person found in database:\n");
+    LogD("   Name: %s\n", person.name.toStdString().c_str());
+    LogD("   PersonID: %d\n", person.personid);
+    LogD("   UUID: %s\n", person.uuid.toStdString().c_str());
+    LogD("   Employee ID: %s\n", person.idcard.toStdString().c_str());
+    LogD("   Access Level: %d\n", person.access_level);
+    
+    // ✅✅✅ CHECK ACCESS LEVEL FIRST (SAME AS RFID CARD LOGIC) ✅✅✅
+    int userAccessLevel = person.access_level;
+    
+    LogD("%s %s[%d] Fingerprint Check - User: %s, EmployeeID: %s, DB access_level: %d, DeviceLevel: %s\n",
+         __FILE__, __FUNCTION__, __LINE__,
+         person.name.toStdString().c_str(),
+         person.idcard.toStdString().c_str(),
+         userAccessLevel,
+         m_deviceAccessLevel.toStdString().c_str());
+    
+    if (!CheckAccessLevelFromDB(userAccessLevel)) {
+        LogD("%s %s[%d] === FINGERPRINT ACCESS DENIED - Treating as STRANGER ===\n", 
+             __FILE__, __FUNCTION__, __LINE__);
+        
+        // ✅ Treat as STRANGER - don't set any personal info
+        {
+            QMutexLocker locker(&d->sync);
+            
+            if (d->mIdentifyFaceRecord.time_Start == 0) {
+                d->mIdentifyFaceRecord.time_End = 
+                d->mIdentifyFaceRecord.time_Start = (double)clock();
+            }
+            
+            d->mIdentifyFaceRecord.FaceType = STRANGER;
+            d->mIdentifyFaceRecord.face_name = QObject::tr("stranger");
+            d->mIdentifyFaceRecord.face_personid = 0;
+            d->mIdentifyFaceRecord.face_uuid = "";
+            d->mIdentifyFaceRecord.face_idcardnum = "";
+        }
+        
+        // Show RED rectangle with "stranger"
+        ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+            false, "stranger", 0, "", "");
+        
+        // Show stranger message
+        emit sigTipsMessage(BOTTOM_MESSAGE, 3, 
+            QObject::tr("<font color=\"#FFFF33\">stranger</font>"));
+        
+        // Play access denied audio
+        YNH_LJX::Audio::Audio_PlayCustomerPcm("zh", "AccessDenied.wav", true);
+        
+        LogD("%s %s[%d] Access denied message displayed\n", __FILE__, __FUNCTION__, __LINE__);
+        return;
+    }
+    
+    LogD("%s %s[%d] === FINGERPRINT ACCESS GRANTED - Showing recognized person ===\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // ✅ ACCESS GRANTED - Continue with normal recognition flow
+    
+    // Update identification record
+    {
+        QMutexLocker locker(&d->sync);
+        
+        if (d->mIdentifyFaceRecord.time_Start == 0) {
+            d->mIdentifyFaceRecord.time_End = 
+            d->mIdentifyFaceRecord.time_Start = (double)clock();
+        }
+        
+        d->mIdentifyFaceRecord.FaceType = NOT_STRANGER;
+        d->mIdentifyFaceRecord.face_personid = person.personid;
+        d->mIdentifyFaceRecord.face_name = person.name;
+        d->mIdentifyFaceRecord.face_uuid = person.uuid;
+        d->mIdentifyFaceRecord.face_idcardnum = person.idcard;
+        d->mIdentifyFaceRecord.face_sex = person.sex;
+        d->mIdentifyFaceRecord.face_persontype = person.persontype;
+        d->mIdentifyFaceRecord.process_state.append("&9");
+    }
+    
+    // Show GREEN rectangle on camera feed
+    LogD("Setting green rectangle on camera...\n");
+    ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+        true, person.name, person.personid, person.uuid, person.idcard);
+    
+    // ✅✅✅ CRITICAL: Check connection to FaceMainFrm ✅✅✅
+    LogD("\n╔════════════════════════════════════════════════════════════╗\n");
+    LogD("║  🔍 CHECKING sigRecognizedPerson CONNECTIONS              ║\n");
+    LogD("╚════════════════════════════════════════════════════════════╝\n");
+    
+    int popupConnCount = this->receivers(
+        SIGNAL(sigRecognizedPerson(QString,int,QString,QString)));
+    
+    LogD("Signal: sigRecognizedPerson(QString, int, QString, QString)\n");
+    LogD("Connected receivers: %d\n", popupConnCount);
+    
+    if (popupConnCount == 0) {
+        LogE("\n");
+        LogE("❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n");
+        LogE("❌  POPUP WON'T SHOW - NO CONNECTIONS!      ❌\n");
+        LogE("❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n");
+        LogE("\n");
+        LogE("The connection from IdentityManagement to FaceMainFrm is MISSING!\n");
+        LogE("Add this to FaceApp::InitConnect():\n");
+        LogE("\n");
+        LogE("QObject::connect(\n");
+        LogE("    m_pIdentityManagement,\n");
+        LogE("    &IdentityManagement::sigRecognizedPerson,\n");
+        LogE("    m_pFaceMainFrm,\n");
+        LogE("    &FaceMainFrm::slotDisplayRecognizedPerson,\n");
+        LogE("    Qt::QueuedConnection\n");
+        LogE(");\n");
+        LogE("\n");
+    } else {
+        LogD("✅ Popup signal has %d receiver(s)\n", popupConnCount);
+    }
+    
+    LogD("\n╔════════════════════════════════════════════════════════════╗\n");
+    LogD("║  🚀 EMITTING sigRecognizedPerson FOR POPUP                ║\n");
+    LogD("╚════════════════════════════════════════════════════════════╝\n");
+    
+    LogD("Emitting with parameters:\n");
+    LogD("  name = \"%s\"\n", person.name.toStdString().c_str());
+    LogD("  personId = %d\n", person.personid);
+    LogD("  uuid = \"%s\"\n", person.uuid.toStdString().c_str());
+    LogD("  idcard = \"%s\"\n", person.idcard.toStdString().c_str());
+    
+    // Emit the signal for popup display
+    emit sigRecognizedPerson(
+        person.name,        // QString name
+        person.personid,    // int personId  
+        person.uuid,        // QString uuid
+        person.idcard       // QString idcard
+    );
+    
+    LogD("Signal emitted!\n");
+    
+    // Force processing
+    QCoreApplication::processEvents();
+    
+    LogD("╔════════════════════════════════════════════════════════════╗\n");
+    LogD("║  ✅ sigRecognizedPerson SENT - Popup should show now!     ║\n");
+    LogD("╚════════════════════════════════════════════════════════════╝\n");
+    
+    // Show bottom text
+    QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+        person.name, person.idcard);
+    emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
+    
+    // Open door if configured
+    QString doorMode = ReadConfig::GetInstance()->getDoor_MustOpenMode();
+    QString optionalMode = ReadConfig::GetInstance()->getDoor_OptionalOpenMode();
+    
+    if (doorMode.contains("9") || optionalMode.contains("9") || 
+        doorMode == "1" || doorMode == "2") {
+        
+        LogD("Opening door...\n");
+        YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
+        
+        int iRelay = ReadConfig::GetInstance()->getDoor_Relay();
+        if (iRelay == 1) {
+            YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
+        } else if (iRelay == 2) {
+            YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
+        } else {
+            YNH_LJX::Utils_Door::GetInstance()->OpenDoor("");
+        }
+        
+        PersonRecordToDB::GetInstance()->appRecordData(d->mIdentifyFaceRecord);
+        
+        QTimer::singleShot(2000, this, [this, d]() {
+            slotDisClearMessage();
+            d->mIdentifyFaceRecord.Finish = true;
+        });
+    }
+    
+    LogD("\n");
+    LogD("████████████████████████████████████████████████████████████\n");
+    LogD("█  ✅ slotFingerprintMatched() COMPLETE                   █\n");
+    LogD("████████████████████████████████████████████████████████████\n");
+    LogD("\n\n");
 }
 
 void IdentityManagement::slotHealthCodeInfo(const int type, const QString name, const QString idCard, const int qrCodeType, const double warningTemp, const QString msg)
@@ -1080,7 +1353,11 @@ void IdentityManagement::slotHealthCodeInfo(const int type, const QString name, 
                 //开门
                     if (!d->mIdentifyFaceRecord.face_name.isEmpty() && d->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
                     {                        
-                      emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+d->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
+QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+                d->mIdentifyFaceRecord.face_name,
+                d->mIdentifyFaceRecord.face_idcardnum
+            );
+emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
                     if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
 	                    YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
                     }
@@ -1112,6 +1389,23 @@ void IdentityManagement::slotHealthCodeInfo(const int type, const QString name, 
     emit sigShowHealthCode(d->mHealthCode.type, d->mHealthCode.name, d->mHealthCode.idCard, d->mHealthCode.qrcode, d->mHealthCode.warningTemp, d->mHealthCode.msg);
 
 }
+
+void IdentityManagement::slotFingerprintNotRecognized()
+{
+    LogD("%s %s[%d] ╔═══════════════════════════════════════╗\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ║  ❌ FINGERPRINT NOT RECOGNIZED        ║\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ╚═══════════════════════════════════════╝\n", __FILE__, __FUNCTION__, __LINE__);
+    
+    // Play stranger audio
+    YNH_LJX::Audio::Audio_PlayPeopleStrangerPcm("zh");
+    
+    // Show stranger message
+    emit sigTipsMessage(BOTTOM_MESSAGE, 3, 
+        QObject::tr("<font color=\"#FFFF33\">stranger</font>"));
+    
+    LogD("%s %s[%d] Stranger message displayed and audio played\n", __FILE__, __FUNCTION__, __LINE__);
+}
+
 void IdentityManagement::slotLRHealthCodeInfo2(HEALTINFO_t info)
 {
     Q_D(IdentityManagement);   
@@ -1205,7 +1499,11 @@ void IdentityManagement::slotIdentityCardInfo(const QString name, const QString 
                     //开门
                     if (!d->mIdentifyFaceRecord.face_name.isEmpty() && d->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
                     {                        
-                      emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+d->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
+            QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+                d->mIdentifyFaceRecord.face_name,
+                d->mIdentifyFaceRecord.face_idcardnum
+            );
+emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
                     if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
 	                    YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
                     }
@@ -1226,7 +1524,7 @@ void IdentityManagement::slotIdentityCardInfo(const QString name, const QString 
                     slotDisClearMessage();             
                 } else 
                 {
-                    //不能开门,看下是否人证比对
+                    
                     if (   (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
                            && !d->mIdentifyFaceRecord.process_state.contains("2")   ) 
                     {
@@ -1236,21 +1534,23 @@ void IdentityManagement::slotIdentityCardInfo(const QString name, const QString 
 
             } else
             {
-                //emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("IDcodeError"));//身份证号不存在
-                //YNH_LJX::Audio::Audio_PlayCustomerPcm("zh","IDcodeError.wav",true);  
-                //未注册
+          
                 d->mIdentifyFaceRecord.process_state.append("&6");  
                 if(d->mIdentifyFaceRecord.time_Start == 0)
                 {//默认状态
                     d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();//解发超时起始时间
                 }
-                //可选的开门方式中有刷卡，则自行判断下刷卡的权限
+                
                 if (d->CanOpenDoor())
                 {
                     //开门
                     if (!d->mIdentifyFaceRecord.face_name.isEmpty() && d->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
                     {                        
-                      emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+d->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
+                   QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+    d->mIdentifyFaceRecord.face_name,
+    d->mIdentifyFaceRecord.face_idcardnum  // Only ID card, no IC card
+);
+                      emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
                         if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
                         {}
                         else 
@@ -1334,7 +1634,11 @@ void IdentityManagement::slotTemperatureValue(const float value)
             //开门
             if (!d->mIdentifyFaceRecord.face_name.isEmpty() && d->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
             {                
-                emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+d->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
+QString displayText = OptimizedDisplayHelper::createVerifiedDisplay(
+                d->mIdentifyFaceRecord.face_name,
+                d->mIdentifyFaceRecord.face_idcardnum
+            );
+                emit sigTipsMessage(BOTTOM_MESSAGE, 3, displayText);
             if (door_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)) || optional_mode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
 	                    YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
             }
@@ -1355,59 +1659,258 @@ void IdentityManagement::slotTemperatureValue(const float value)
             slotDisClearMessage();       
 
         }
-      // if ( d->mMustOpenMode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY)) 
-     //     || d->mOptionalOpenMode.contains(d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY)))
+  
        if ( d->mMustOpenMode == d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY) 
           || d->mOptionalOpenMode == d->Door_OpenModeToSTR(_DOOR_OPEN_MODE::THERMOMETRY))     
         {                
         
             emit sigTipsMessage(TOP_MESSAGE, 1, QObject::tr(""));
             YNH_LJX::Audio::Audio_PlayCustomerPcm("zh","temp_normal.wav",true); 
-            emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("TemperaturenSucceeded"));//Face recognition succeeded 识别成功
+            emit sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("TemperaturenSucceeded"));//Face recognition succeeded 识别成功 
         }
 #endif         
     }
 	
 }
 
-void IdentityManagement::EchoFaceRecognition(const int &id, const int &FaceType, const int &face_personid, const int &face_persontype, const QString &face_name, const QString &face_sex, const QString &face_uuid, const QString &face_idcardnum, const QString &face_iccardnum, const QString &face_gids, const QString &face_aids, const QByteArray &face_feature)
+void IdentityManagement::setDeviceAccessLevel(const QString &level)
 {
-    Q_UNUSED(face_aids);
-    Q_UNUSED(id);
-    Q_D(IdentityManagement);
-    d->sync.lock();
-
-    if(d->mIdentifyFaceRecord.face.enFaceType != CORE_FACE_RECT_TYPE_UNKNOW)
-    {
-        d->mIdentifyFaceRecord.Tick = 0;
-        
-        if(d->mIdentifyFaceRecord.time_Start == 0)
-        {//默认状态
-            d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();//解发超时起始时间
-		}        
-        d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_MATCH;//当前人脸已识别
-        d->mIdentifyFaceRecord.FaceType = FaceType;
-        d->mIdentifyFaceRecord.face_personid = face_personid;//人脸库id
-        d->mIdentifyFaceRecord. face_persontype = face_persontype;//是否陌生人（1陌生人，2非陌生人）
-        /*下面字段是人员录入信息库*/
-        d->mIdentifyFaceRecord.face_name = (FaceType == NOT_STRANGER) ? face_name : QObject::tr("stranger");//陌生人
-        d->mIdentifyFaceRecord.face_sex = face_sex;//性别
-        d->mIdentifyFaceRecord.face_uuid = face_uuid;//人脸信息的数据库的标一标识码
-        d->mIdentifyFaceRecord.face_idcardnum = face_idcardnum;//身份证号
-        d->mIdentifyFaceRecord.face_iccardnum = face_iccardnum;//ic卡号
-        d->mIdentifyFaceRecord.face_gids = face_gids;//组
-        d->mIdentifyFaceRecord.face_aids = face_aids;//开门方式
-        d->mIdentifyFaceRecord.face_feature = face_feature;//特征值
-        if (FaceType == NOT_STRANGER)
-        {
-            d->mIdentifyFaceRecord.process_state.append("&2");//人脸已识别
-        }
-    }
-
-    d->sync.unlock();
+    m_deviceAccessLevel = level;
+    
+    LogD("%s %s[%d] Device access level set to: %s\n", 
+         __FILE__, __FUNCTION__, __LINE__, 
+         level.toStdString().c_str());
 }
 
-bool IdentityManagementPrivate::DistributeTheTasks()
+bool IdentityManagement::CheckAccessLevelFromDB(int userAccessLevel)
+{
+    // Convert device access level to int for comparison
+    int deviceLevel = m_deviceAccessLevel.toInt();
+    
+    // If user has no access level (0), deny access
+    if (userAccessLevel == 0) {
+        LogD("%s %s[%d] User has no access level (0) - DENIED\n", 
+             __FILE__, __FUNCTION__, __LINE__);
+        return false;
+    }
+    
+    // Compare user's DB access level with device access level
+    bool matches = (userAccessLevel == deviceLevel);
+    
+    LogD("%s %s[%d] DB Access Level Check: UserLevel=%d, DeviceLevel=%d, Result=%s\n", 
+         __FILE__, __FUNCTION__, __LINE__, 
+         userAccessLevel, 
+         deviceLevel,
+         matches ? "GRANTED" : "DENIED");
+    
+    return matches;
+}
+
+void IdentityManagement::EchoFingerprintRecognition(
+    const int &face_personid,
+    const int &FaceType, 
+    const QString &face_name,
+    const QString &face_uuid,
+    const QString &face_idcardnum,
+    const QString &face_sex,
+    const int &face_persontype)
+{
+    Q_D(IdentityManagement);
+    
+    LogD("%s %s[%d] === ECHO FINGERPRINT RECOGNITION ===\n", __FILE__, __FUNCTION__, __LINE__);
+    LogD("   Name: %s, PersonID: %d, Type: %s\n",
+         face_name.toStdString().c_str(), face_personid,
+         (FaceType == NOT_STRANGER) ? "REGISTERED_USER" : "STRANGER");
+    
+    // ✅ CHECK ACCESS LEVEL BEFORE setting recognition data
+    if (FaceType == NOT_STRANGER) {
+        PERSONS_t userInfo = RegisteredFacesDB::GetInstance()->getPersonByUuid(face_uuid);
+        
+        if (!userInfo.uuid.isEmpty()) {
+            int userAccessLevel = userInfo.access_level;
+            
+            LogD("%s %s[%d] Fingerprint Access Check - User: %s, DB Level: %d, DeviceLevel: %s\n",
+                 __FILE__, __FUNCTION__, __LINE__,
+                 face_name.toStdString().c_str(),
+                 userAccessLevel,
+                 m_deviceAccessLevel.toStdString().c_str());
+            
+            if (!CheckAccessLevelFromDB(userAccessLevel)) {
+                LogD("%s %s[%d] === FINGERPRINT ACCESS DENIED - Treating as STRANGER ===\n",
+                     __FILE__, __FUNCTION__, __LINE__);
+                
+                // ✅ Override to STRANGER
+                {
+                    QMutexLocker locker(&d->sync);
+                    
+                    if (d->mIdentifyFaceRecord.time_Start == 0) {
+                        d->mIdentifyFaceRecord.time_End = 
+                        d->mIdentifyFaceRecord.time_Start = (double)clock();
+                    }
+                    
+                    d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_MATCH;
+                    d->mIdentifyFaceRecord.FaceType = STRANGER;  // Force STRANGER
+                    d->mIdentifyFaceRecord.face_personid = 0;
+                    d->mIdentifyFaceRecord.face_name = QObject::tr("stranger");
+                    d->mIdentifyFaceRecord.face_uuid = "";
+                    d->mIdentifyFaceRecord.face_idcardnum = "";
+                }
+                
+                // Show RED rectangle with "stranger"
+                ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+                    false, "stranger", 0, "", "");
+                
+                // Play access denied audio
+                YNH_LJX::Audio::Audio_PlayCustomerPcm("zh", "AccessDenied.wav", true);
+                
+                // Show stranger message
+                emit sigTipsMessage(BOTTOM_MESSAGE, 3, 
+                    QObject::tr("<font color=\"#FFFF33\">stranger</font>"));
+                
+                return;
+            }
+            
+            LogD("%s %s[%d] === FINGERPRINT ACCESS GRANTED - Showing recognized person ===\n", 
+                 __FILE__, __FUNCTION__, __LINE__);
+            
+            // ✅ Emit recognition signal for popup display
+            emit sigRecognizedPerson(face_name, face_personid, face_uuid, face_idcardnum);
+            LogD("%s %s[%d] === FINGERPRINT RECOGNITION SIGNAL EMITTED === Name: %s, EmployeeID: %s\n",
+                 __FILE__, __FUNCTION__, __LINE__, 
+                 face_name.toStdString().c_str(), face_idcardnum.toStdString().c_str());
+        }
+    }
+    
+    // ✅ ACCESS GRANTED - Update identification record
+    {
+        QMutexLocker locker(&d->sync);
+        
+        if (d->mIdentifyFaceRecord.time_Start == 0) {
+            d->mIdentifyFaceRecord.time_End = 
+            d->mIdentifyFaceRecord.time_Start = (double)clock();
+        }
+        
+        d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_MATCH;
+        d->mIdentifyFaceRecord.FaceType = FaceType;
+        d->mIdentifyFaceRecord.face_personid = face_personid;
+        d->mIdentifyFaceRecord.face_name = face_name;
+        d->mIdentifyFaceRecord.face_uuid = face_uuid;
+        d->mIdentifyFaceRecord.face_idcardnum = face_idcardnum;
+        d->mIdentifyFaceRecord.face_sex = face_sex;
+        d->mIdentifyFaceRecord.face_persontype = face_persontype;
+        
+        if (FaceType == NOT_STRANGER) {
+            d->mIdentifyFaceRecord.process_state.append("&9");
+        }
+    }
+    
+    // Show GREEN box with name and ID
+    if (FaceType == NOT_STRANGER) {
+        ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+            true, face_name, face_personid, face_uuid, face_idcardnum);
+    }
+}
+
+void IdentityManagement::EchoFaceRecognition(const int &id, const int &FaceType, 
+                                           const int &face_personid, const int &face_persontype, 
+                                           const QString &face_name, const QString &face_sex, 
+                                           const QString &face_uuid, const QString &face_idcardnum, 
+                                           const QString &face_iccardnum, const QString &face_gids, 
+                                           const QString &face_aids, const QByteArray &face_feature)
+{
+    Q_D(IdentityManagement);
+    
+    // CHECK ACCESS LEVEL BEFORE setting recognition data
+    if (FaceType == NOT_STRANGER) {
+        PERSONS_t userInfo = RegisteredFacesDB::GetInstance()->getPersonByUuid(face_uuid);
+        
+        if (!userInfo.uuid.isEmpty()) {
+            int userAccessLevel = userInfo.access_level;
+            
+            LogD("%s %s[%d] === ACCESS CHECK === User: %s, DB Level: %d, Device Level: %s\n",
+                 __FILE__, __FUNCTION__, __LINE__,
+                 face_name.toStdString().c_str(),
+                 userAccessLevel,
+                 m_deviceAccessLevel.toStdString().c_str());
+            
+            if (!CheckAccessLevelFromDB(userAccessLevel)) {
+                LogD("%s %s[%d] === ACCESS DENIED === Keeping RED rectangle box\n",
+                     __FILE__, __FUNCTION__, __LINE__);
+                
+                // ❌ SET IDENTIFY STATE TO FALSE - Rectangle stays RED
+                ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+                    false, "Unauthorized", 0, "", "");
+                
+                // Override to STRANGER
+                QMutexLocker locker(&d->sync);
+                
+                if (d->mIdentifyFaceRecord.face.enFaceType != CORE_FACE_RECT_TYPE_UNKNOW) {
+                    d->mIdentifyFaceRecord.Tick = 0;
+                    
+                    if (d->mIdentifyFaceRecord.time_Start == 0) {
+                        d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();
+                    }
+                    
+                    d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_MATCH;
+                    d->mIdentifyFaceRecord.FaceType = STRANGER;  // Force STRANGER
+                    d->mIdentifyFaceRecord.face_personid = face_personid;
+                    d->mIdentifyFaceRecord.face_name = QObject::tr("stranger");
+                    d->mIdentifyFaceRecord.face_uuid = "";
+                    d->mIdentifyFaceRecord.face_idcardnum = "";
+                }
+                
+                YNH_LJX::Audio::Audio_PlayCustomerPcm("zh", "AccessDenied.wav", true);
+                
+                return;
+            }
+            
+            LogD("%s %s[%d] === ACCESS GRANTED === Changing to GREEN rectangle box\n", 
+                 __FILE__, __FUNCTION__, __LINE__);
+            
+            // ✅ SET IDENTIFY STATE TO TRUE - Rectangle changes from RED to GREEN
+            ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+                true, face_name, face_personid, face_uuid, face_idcardnum);
+            
+            // ✅ Emit recognition signal for popup
+            emit sigRecognizedPerson(face_name, face_personid, face_uuid, face_idcardnum);
+            
+            LogD("%s %s[%d] === GREEN BOX SET === Name: %s, EmployeeID: %s\n",
+                 __FILE__, __FUNCTION__, __LINE__, 
+                 face_name.toStdString().c_str(), face_idcardnum.toStdString().c_str());
+        }
+    } else {
+        // Real stranger (not in database at all)
+        LogD("%s %s[%d] === REAL STRANGER === Keeping RED rectangle box\n",
+             __FILE__, __FUNCTION__, __LINE__);
+        
+        ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState(
+            false, "stranger", 0, "", "");
+    }
+    
+    // Continue with normal recognition flow
+    QMutexLocker locker(&d->sync);
+    
+    if (d->mIdentifyFaceRecord.face.enFaceType != CORE_FACE_RECT_TYPE_UNKNOW) {
+        d->mIdentifyFaceRecord.Tick = 0;
+        
+        if (d->mIdentifyFaceRecord.time_Start == 0) {
+            d->mIdentifyFaceRecord.time_End = d->mIdentifyFaceRecord.time_Start = (double)clock();
+        }
+        
+        d->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_MATCH;
+        d->mIdentifyFaceRecord.FaceType = FaceType;
+        d->mIdentifyFaceRecord.face_personid = face_personid;
+        d->mIdentifyFaceRecord.face_name = (FaceType == NOT_STRANGER) ? face_name : QObject::tr("stranger");
+        d->mIdentifyFaceRecord.face_uuid = face_uuid;
+        d->mIdentifyFaceRecord.face_idcardnum = face_idcardnum;
+        
+        if (FaceType == NOT_STRANGER) {
+            d->mIdentifyFaceRecord.process_state.append("&2");
+        }
+    }
+}
+
+ bool IdentityManagementPrivate::DistributeTheTasks()
 {
 	static int nAlgoStateAboutFaceCount = 0;
 	if(nAlgoStateAboutFaceCount ++ == 10)
@@ -1437,147 +1940,103 @@ bool IdentityManagementPrivate::DistributeTheTasks()
         }break;
         case CORE_FACE_RECT_TYPE_SEARCH://正查找人脸
             break;
-        case CORE_FACE_RECT_TYPE_MATCH:
-        {//人脸查找完成，检测开门模式是否达标
-            QString door_mode = this->mMustOpenMode;
-            QString subStr=Door_OpenModeToSTR((_DOOR_OPEN_MODE)4);       
-            QString process = this->mIdentifyFaceRecord.process_state;
-            QString optional_mode = this->mOptionalOpenMode;
+case CORE_FACE_RECT_TYPE_MATCH:
+{
+    QString door_mode = ReadConfig::GetInstance()->getDoor_MustOpenMode();
+    
+    if (door_mode == "2" || door_mode == "1") {
+        if (this->mIdentifyFaceRecord.FaceType == NOT_STRANGER) {
+            LogD("%s %s[%d] === DOOR MODE %s === Opening door for recognized user: %s\n", 
+                 __FILE__, __FUNCTION__, __LINE__, door_mode.toStdString().c_str(),
+                 this->mIdentifyFaceRecord.face_name.toStdString().c_str());
 
-            if (door_mode.contains(Door_OpenModeToSTR((_DOOR_OPEN_MODE)2))  || optional_mode.contains(Door_OpenModeToSTR((_DOOR_OPEN_MODE)2))) 
-            {
-                qXLApp->GetPowerManagerThread()->setIdentifyState((this->mIdentifyFaceRecord.FaceType == NOT_STRANGER) ? true : false);
-            } else 
-            {
-                return false;//不刷脸则不用往下走
+            // DISABLE power manager LED control
+            qXLApp->GetPowerManagerThread()->setRecognitionInProgress(true);
+            
+            // NOW control LEDs manually
+            YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Light_Red, 0);
+            YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Light_White, 0);
+            YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Light_Green, 1);
+            
+            YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
+            
+            int iRelay = ReadConfig::GetInstance()->getDoor_Relay();
+            if (iRelay == 1) {
+                YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
+            } else if (iRelay == 2) {
+                YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
+            } else {
+                YNH_LJX::Utils_Door::GetInstance()->OpenDoor("");
             }
-            printf(">>>>>%s,%s,%d CheckPassageOfTime\n",__FILE__,__func__,__LINE__);
-            if(!RegisteredFacesDB::GetInstance()->CheckPassageOfTime(this->mIdentifyFaceRecord.face_uuid))
-            {
-                printf(">>>>>%s,%s,%d CheckPassageOfTime \n",__FILE__,__func__,__LINE__);
-                emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("CheckPassageOfTimeHint"));//当前时段禁止通行,No traffic in the current period.
-                return false;
-            }  
-
-            /*改变识别状态*/
-            ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->setIdentifyState((this->mIdentifyFaceRecord.FaceType == NOT_STRANGER) ? true : false);
-            int passtimer = ((double)clock()- this->mIdentifyFaceRecord.time_Start)/1000/1000;
-
-            //检测开门方式
-            if(this->CheckDoorOpenMode(this->mIdentifyFaceRecord) )
-            {//可以通行了
-        
-                if (door_mode.contains(Door_OpenModeToSTR((_DOOR_OPEN_MODE)2))  || optional_mode.contains(Door_OpenModeToSTR((_DOOR_OPEN_MODE)2))) 
-                {
-                    qXLApp->GetPowerManagerThread()->setIdentifyState((this->mIdentifyFaceRecord.FaceType == NOT_STRANGER) ? true : false);
-                } else 
-                {
-                    return false;//不刷脸则不用往下走
-                }
-
-
-
-                if (mFirstTime ==1 ) {}
-                else if  (this->mIdentifyInterval &&  ( passtimer <this->mIdentifyInterval  ) )
-                {
-                   //要时间间隔 
-                    return false;
-                }
-                mFirstTime+=1;
+            
+            PersonRecordToDB::GetInstance()->appRecordData(this->mIdentifyFaceRecord);
+            
+            // Keep green light for 3 seconds, then restore power manager control
+            QTimer::singleShot(1000, [this]() {
+                YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Light_Green, 0);
+                // RE-ENABLE power manager LED control
+                qXLApp->GetPowerManagerThread()->setRecognitionInProgress(false);
+            });
+            this->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_DELETE;
+            return true;
+        } else {
+            // STRANGER HANDLING WITH IMMEDIATE AUDIO + INTERVAL RESPECT
+            
+            // Check if we should play stranger audio (respect interval)
+            bool shouldPlayAudio = true;
+            
+            // Check if this is the same person within interval
+            static int lastStrangerTrackId = -1;
+            static double lastStrangerAudioTime = 0;
+            
+            double currentTime = (double)clock();
+            double timeSinceLastAudio = (currentTime - lastStrangerAudioTime) / 1000 / 1000; // Convert to seconds
+            
+            if (lastStrangerTrackId == this->mIdentifyFaceRecord.face.track_id && 
+                this->mIdentifyInterval > 0 && 
+                timeSinceLastAudio < this->mIdentifyInterval) {
+                shouldPlayAudio = false; // Same person within interval, don't repeat audio
+            }
+            
+            // Display stranger message immediately
+            emit q_func()->sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("<font color=\"#FFFF33\">stranger</font>"));
+            
+            // Play stranger audio immediately if interval allows
+            if (shouldPlayAudio) {
+                YNH_LJX::Audio::Audio_PlayPeopleStrangerPcm("zh");
+                lastStrangerTrackId = this->mIdentifyFaceRecord.face.track_id;
+                lastStrangerAudioTime = currentTime;
                 
-                if( this->mIdentifyFaceRecord.FaceType != NOT_STRANGER)
-                {//识别时间间隔提示陌生人
-                    emit q_func()->sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("<font color=\"#FFFF33\">stranger</font>"));//陌生人                
-                    YNH_LJX::Audio::Audio_PlayPeopleStrangerPcm("zh");
-                    this->mIdentifyFaceRecord.time_End = this->mIdentifyFaceRecord.time_Start = (double)clock();
-                    printf(">>>>>%s,%s,%d\n",__FILE__,__func__,__LINE__);                    
-                    //保存记录            
-                    PersonRecordToDB::GetInstance()->appRecordData(this->mIdentifyFaceRecord);                
-                    this->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_DELETE;
-                    //已经通行
-                    //如果只有刷脸,则不通过,如果不包含刷脸,则通过  
-                    if(door_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE))
-                    ||  optional_mode.contains(Door_OpenModeToSTR(_DOOR_OPEN_MODE::SWIPING_FACE)))
-                    {
-                        //如果包含刷脸,并是陌生人,则不通过,
-                    }
-                    else {
-                          //如果不包含刷脸,并是陌生人,可以通过
-                        
-						int iRelay =  ReadConfig::GetInstance()->getDoor_Relay();
-						LogD(">>>%s,%s,%d, OpenDoor iRelay=%d\n",__FILE__,__func__,__LINE__,iRelay);						
-						if (iRelay == 1) //1:常开
-						{
-							YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
-						}
-						else if (iRelay == 2) //2:常闭
-						{        
-							YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
-						} 
-						else 
-						   YNH_LJX::Utils_Door::GetInstance()->OpenDoor(this->mIdentifyFaceRecord.face_iccardnum);
-						 
-                        YNH_LJX::Utils_Door::GetInstance()->OpenDoor("");
-                        PersonRecordToDB::GetInstance()->appRecordData(mIdentifyFaceRecord);                        
-                    }
-
-                }
-              #if 1
-                if  (this->mIdentifyFaceRecord.FaceType == NOT_STRANGER)
-                {                	
-                    
-                    YNH_LJX::Audio::Audio_PlayRecognizedPcm("zh");
-                   // if (!this->mIdentifyFaceRecord.face_name.isEmpty() && this->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
-                    if ( this->mIdentifyFaceRecord.face_name!=QObject::tr("stranger") )
-                    {                        
-                      emit q_func()->sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+this->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
-                    }
-                    
-					
-					int iRelay =  ReadConfig::GetInstance()->getDoor_Relay();
-					LogD(">>>%s,%s,%d, OpenDoor iRelay=%d\n",__FILE__,__func__,__LINE__,iRelay);					
-					if (iRelay == 1) //1:常开
-					{
-						YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 1);
-					}
-					else if (iRelay == 2) //2:常闭
-					{        
-						YNH_LJX::GPIO::Device_SetDeviceState(DEVICE_Relay, 0);
-					} 
-					else 
-					   YNH_LJX::Utils_Door::GetInstance()->OpenDoor(this->mIdentifyFaceRecord.face_iccardnum);
-
-                    emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr(""));
-                    if (!this->mIdentifyFaceRecord.face_name.isEmpty())
-                    {                        
-                      emit q_func()->sigTipsMessage(BOTTOM_MESSAGE, 3, QObject::tr("%1FaceRecognitionSucceeded").arg("["+this->mIdentifyFaceRecord.face_name+"]"));//Face recognition succeeded 识别成功
-                    }
-
-                    this->mIdentifyFaceRecord.time_End = (double)clock();
-                    if (mIdentifyFaceRecord.FaceType == NOT_STRANGER)
-                        PersonRecordToDB::GetInstance()->appRecordData(this->mIdentifyFaceRecord);
-                    else 
-                    {
-                        QString path = QString("/mnt/user/face_crop_image/%1/Door_%2.jpg").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd"))
-                                .arg(QDateTime::currentDateTime().toString("yyyyMMddhhmmsszzz")); 
-                                    
-                        path = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getCurFaceImgPath();                        
-                        int ret = PersonRecordToDB::GetInstance()->appDoorRecordData(0, path);
-                    }
-
-                    this->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_DELETE;              
-                }
-               #endif  
-               
-            } 
-        }break;
+                LogD("%s %s[%d] === DOOR MODE %s === Playing stranger audio for track_id: %d\n", 
+                     __FILE__, __FUNCTION__, __LINE__, door_mode.toStdString().c_str(), this->mIdentifyFaceRecord.face.track_id);
+            } else {
+                LogD("%s %s[%d] === DOOR MODE %s === Skipping stranger audio (within interval) for track_id: %d\n", 
+                     __FILE__, __FUNCTION__, __LINE__, door_mode.toStdString().c_str(), this->mIdentifyFaceRecord.face.track_id);
+            }
+            
+            this->mIdentifyFaceRecord.face.enFaceType = CORE_FACE_RECT_TYPE_DELETE;
+            return true;
+        }
+    } else {
+        // Existing logic for other door modes...
+        if(!RegisteredFacesDB::GetInstance()->CheckPassageOfTime(this->mIdentifyFaceRecord.face_uuid)) {
+            emit q_func()->sigTipsMessage(TOP_MESSAGE, 1, QObject::tr("CheckPassageOfTimeHint"));
+            return false;
+        } 
+        
+        if(this->CheckDoorOpenMode(this->mIdentifyFaceRecord)) {
+        }
+    }
+    
+    break;
+}
         case CORE_FACE_RECT_TYPE_DELETE:
         {
             int passtimer = ((double)clock()- this->mIdentifyFaceRecord.time_End)/1000/1000;
             if(this->mIdentifyInterval &&  (passtimer >= this->mIdentifyInterval))
             {//重置刷卡标识
-                if(this->mIdentifyFaceRecord.FaceType != NOT_STRANGER)
-                    YNH_LJX::Audio::Audio_PlayPeopleStrangerPcm("zh");
+               // if(this->mIdentifyFaceRecord.FaceType != NOT_STRANGER)
+                    //YNH_LJX::Audio::Audio_PlayPeopleStrangerPcm("zh");
                 this->mIdentifyFaceRecord = {};
                 this->mIdentityCard = {};//身份证信息
                 this->mHealthCode = {};//健康码信息
@@ -1595,7 +2054,7 @@ void IdentityManagement::run()
     while (!isInterruptionRequested())
     {
         d->sync.lock();
-        if (d->DistributeTheTasks())d->pauseCond.wait(&d->sync, 50);
+        if (d->DistributeTheTasks())d->pauseCond.wait(&d->sync, 30);
         else d->pauseCond.wait(&d->sync);
         d->sync.unlock();
     }

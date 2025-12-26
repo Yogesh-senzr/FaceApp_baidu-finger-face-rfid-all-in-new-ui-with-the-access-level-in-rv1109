@@ -12,12 +12,13 @@ DEPENDPATH += $$PWD/inc
 HEADERS += \
     $$PWD/BaiduFaceManager.h \
     $$PWD/CBaiduFaceEngine.h \    
-
+    $$PWD/FingerprintManager.h \
 
 SOURCES += \
     $$PWD/CBaiduFaceEngine.cpp \
     $$PWD/BaiduFaceManager.cpp \
-
+    $$PWD/FingerprintManager.cpp \
+    
 LIBS += -L$$PWD/lib -lfaceid -lmot_sort
 
 INCLUDEPATH += $$PWD/.

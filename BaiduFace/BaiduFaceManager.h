@@ -38,9 +38,14 @@ public:
     void setVivoDetection(const bool &);//活体检测
     void setRegFaceState(const bool& state);//设置进行注册状态
     bool getRegFaceState();
-    void setIdentifyState(const bool &);//识别状态追踪人脸框颜色(true:绿色,false：红色)
+    void setIdentifyState(const bool &state, const QString &name, const int &personId, const QString &uuid, const QString &idcard = "");
     void setLivenessThreshold(const float &, const float &);
     void setIdentityIdentifycm(const int &);//识别距离
+    bool getLastDetectedFaceRect(QRect &faceRect);
+    bool extractFeaturesFromCroppedImage(const QString &employeeId, QByteArray &faceFeature, double &quality);
+    bool extractFeaturesFromImagePath(const QString &imagePath, QByteArray &faceFeature, double &quality);
+    bool cropAndSaveFaceImage(const QString &employeeId, const QString &sourceImagePath);
+    bool cropCurrentFaceAndSave(const QString &employeeId);
 public:
     bool getAlgoFaceInitState() const;
     bool algoActive(const QString);
@@ -82,8 +87,11 @@ public:
     Q_SIGNAL void sigDisMissMessage(const bool);//当前无人脸（false没人脸， true有人脸）
     Q_SIGNAL void sigDrawFaceRect(const QList<CORE_FACE_RECT_S>);//画人脸移动
     Q_SIGNAL void sigMatchCoreFace(const CORE_FACE_S);
+    Q_SIGNAL void sigRecognizedPerson(const QString &name, const int &personId, const QString &uuid, const QString &idcard);
 private:
     QScopedPointer<BaiduFaceManagerPrivate>d_ptr;
+    QRect m_lastFaceRect;
+    bool m_hasFaceRect;
 private:
     Q_DECLARE_PRIVATE(BaiduFaceManager)
     Q_DISABLE_COPY(BaiduFaceManager)

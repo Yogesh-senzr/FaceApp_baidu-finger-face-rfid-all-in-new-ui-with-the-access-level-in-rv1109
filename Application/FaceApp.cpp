@@ -10,6 +10,7 @@
 #include "RKCamera/Camera/cameramanager.h"
 #include "BaseFace/BaseFaceManager.h"
 #include "BaiduFace/BaiduFaceManager.h"
+#include "BaiduFace/FingerprintManager.h"
 
 #include "PCIcore/SensorManager.h"
 #include "PCIcore/Audio.h"
@@ -39,7 +40,7 @@
 #include "Threads/WatchDogManageThread.h"
 #include "Threads/ShrinkFaceImageThread.h"
 #include "HttpServer/ConnHttpServerThread.h"
-#include "HttpServer/PersonRegistrationThread.h"
+#include "HttpServer/PostPersonRecordThread.h"
 #include "HttpServer/UdpBroadcastThread.h"
 
 #include "ManageEngines/IdentityManagement.h"
@@ -50,12 +51,15 @@
 
 #include <QtCore/QMetaMethod>
 #include <QtWidgets/QStyleFactory>
+#include <QtCore/QTimer> 
 #include <QtCore/QDebug>
 #include <QtWidgets/QSplashScreen>
 #include <QtCore/QElapsedTimer>
 #include <QtGui/QFontDatabase>
 #include <QtCore/QResource>
 #include <QtCore/QTime>
+#include <QtConcurrent/QtConcurrent>
+
 
 class FaceAppPrivate
 {
@@ -72,6 +76,7 @@ private:
 	//void InitArcsoftFaceManager(); //合并在 InitFaceManager
 	void InitPICcore();
 	void InitCallBack();
+	void InitFingerprintManager(); 
 	void InitData();
 	void InitConnect();
 	QString GetParam(char *szParamName ); //1.身份证
@@ -89,6 +94,7 @@ private:
 	ParsePersonXlsx *m_pParsePersonXlsx;
 	//处理批量导出记录表的
 	RecordsExport *m_pRecordsExport;
+	PostPersonRecordThread *m_pPostPersonRecordThread = nullptr;
 	//电源管理
 	powerManagerThread *m_pPowerManagerThread;
 	//国康码
@@ -98,7 +104,10 @@ private:
 	IdentityCardManage *m_pIdentityCardManage;
 	IdentityCard_ZK_Manage *m_pIdentityCard_ZK_Manage; //ZK
 	IdentityCard_DD_Manage *m_pIdentityCard_DD_Manage; //DD
-
+	RegisteredFacesDB* m_registeredFacesDB;
+	FingerprintManager *m_pFingerprintManager;  // NEW: Add this line
+	QTimer *m_pFingerprintHealthTimer;
+	void startFingerprintHealthMonitoring();
 private:
 	FaceApp * const q_ptr;
 private:
@@ -113,6 +122,9 @@ FaceAppPrivate::FaceAppPrivate(FaceApp *ptr) :
 			//	, m_pIdentityCard_DD_Manage(new IdentityCard_DD_Manage) //
 				, m_pParsePersonXlsx(new ParsePersonXlsx) //
 				, m_pRecordsExport(new RecordsExport) //
+				, m_pPostPersonRecordThread(new PostPersonRecordThread) //
+				, m_pFingerprintManager(nullptr)  // NEW: Initialize to nullptr
+				, m_pFingerprintHealthTimer(nullptr)
 				, m_pPowerManagerThread(new powerManagerThread) //
 				, _ready(true) //
 {
@@ -145,11 +157,24 @@ FaceAppPrivate::FaceAppPrivate(FaceApp *ptr) :
 	this->InitCallBack();
 	this->InitData();
 	this->InitConnect();
+     this->InitFingerprintManager();
 
 }
 
 FaceAppPrivate::~FaceAppPrivate()
 {
+	 // 🆕 ADD: Stop health monitoring
+    if (m_pFingerprintHealthTimer) {
+        m_pFingerprintHealthTimer->stop();
+        m_pFingerprintHealthTimer->deleteLater();
+        m_pFingerprintHealthTimer = nullptr;
+    }
+    
+    // 🆕 ADD: Stop fingerprint monitoring
+    if (m_pFingerprintManager) {
+        m_pFingerprintManager->stopContinuousMonitoring();
+    }
+
 	m_pFaceMainFrm->deleteLater();
 }
 
@@ -225,7 +250,7 @@ void FaceAppPrivate::InitFaceManager()
 		default:
 			m_pBaiduFaceManager = new BaiduFaceManager;
 			m_pBaiduFaceManager->setDeskSize(DeskTopWidth, DeskTopHeight);
-			//m_pBaiduFaceManager->setRunFaceEngine();
+			//m_pUnifiedFaceManager->setRunFaceEngine();
 			m_pBaiduFaceManager->startInitFaceEngineThread();			
 			break;
 	}
@@ -272,15 +297,233 @@ void FaceAppPrivate::InitPICcore()
 	//网络服务线程
 	UdpBroadcastThread::GetInstance();
 	ConnHttpServerThread::GetInstance();
-
-   if (!ReadConfig::GetInstance()->getPerson_Registration_Address().isEmpty())
-    {
-        PersonRegistrationThread::GetInstance();
-        LogD("Person Registration Thread initialized with URL: %s", 
-             ReadConfig::GetInstance()->getPerson_Registration_Address().toStdString().c_str());
-    }
-
 }
+
+void FaceAppPrivate::InitFingerprintManager()
+{
+    LogD("%s %s[%d] ╔═══════════════════════════════════════╗\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ║  INITIALIZING FINGERPRINT MANAGER    ║\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ╚═══════════════════════════════════════╝\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // Step 1: Get singleton instance (no hardware init yet)
+    m_pFingerprintManager = FingerprintManager::GetInstance();
+    
+    if (!m_pFingerprintManager) {
+        LogE("%s %s[%d] ❌ ERROR: Failed to get FingerprintManager instance\n", 
+             __FILE__, __FUNCTION__, __LINE__);
+        return;
+    }
+    
+    LogD("%s %s[%d] ✅ FingerprintManager instance created\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // ✅ CRITICAL FIX: Connect signals IMMEDIATELY after manager creation
+    // This ensures the connections exist BEFORE any signals are emitted
+    LogD("%s %s[%d] ╔═══════════════════════════════════════╗\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ║  CONNECTING FINGERPRINT SIGNALS      ║\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ╚═══════════════════════════════════════╝\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // CONNECTION 1: FingerprintManager → IdentityManagement
+    QObject::connect(
+        m_pFingerprintManager, 
+        static_cast<void(FingerprintManager::*)(const QString&, const QString&, const int&)>(
+            &FingerprintManager::sigFingerprintMatched),
+        m_pIdentityManagement, 
+        &IdentityManagement::slotFingerprintMatched, 
+        Qt::QueuedConnection
+    );
+    
+    QObject::connect(
+        m_pFingerprintManager,
+        &FingerprintManager::sigFingerprintNotRecognized,
+        m_pIdentityManagement,
+        &IdentityManagement::slotFingerprintNotRecognized,
+        Qt::QueuedConnection
+    );
+    
+    LogD("%s %s[%d] ✅ FingerprintManager → IdentityManagement connected\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // CONNECTION 2: IdentityManagement → FaceMainFrm (for popup)
+    QObject::connect(
+        m_pIdentityManagement,
+        &IdentityManagement::sigRecognizedPerson,
+        m_pFaceMainFrm,
+        &FaceMainFrm::slotDisplayRecognizedPerson,
+        Qt::QueuedConnection
+    );
+    
+    LogD("%s %s[%d] ✅ IdentityManagement → FaceMainFrm connected\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    LogD("%s %s[%d] ╔═══════════════════════════════════════╗\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ║  ✅ ALL SIGNALS CONNECTED!           ║\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    LogD("%s %s[%d] ╚═══════════════════════════════════════╝\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+    
+    // Step 2: Initialize sensor in background thread after delay
+    QTimer::singleShot(3000, q_ptr, [this]() {
+        LogD("%s %s[%d] === Starting fingerprint sensor initialization (background thread) ===\n", 
+             __FILE__, __FUNCTION__, __LINE__);
+        
+        // Run in background thread to avoid blocking main thread
+        QtConcurrent::run([this]() {
+            try {
+                LogD("Attempting to initialize fingerprint sensor...\n");
+                
+                // Initialize the sensor (this may take time)
+                bool initSuccess = m_pFingerprintManager->initFingerprintSensor();
+                
+                if (initSuccess) {
+                    LogD("%s %s[%d] ✅ Fingerprint sensor initialized successfully\n", 
+                         __FILE__, __FUNCTION__, __LINE__);
+                    
+                    // Only start monitoring AFTER successful init
+                    QTimer::singleShot(0, q_ptr, [this]() {
+                        if (m_pFingerprintManager && m_pFingerprintManager->isSensorReady()) {
+                            LogD("╔═══════════════════════════════════════╗\n");
+                            LogD("║  STARTING CONTINUOUS MONITORING       ║\n");
+                            LogD("╚═══════════════════════════════════════╝\n");
+                            
+                            m_pFingerprintManager->startContinuousMonitoring();
+                            
+                            LogD("✅ Monitoring started successfully\n");
+                            
+                            // Start health check timer
+                            startFingerprintHealthMonitoring();
+                        } else {
+                            LogE("❌ Cannot start monitoring - sensor not ready\n");
+                        }
+                    });
+                    
+                } else {
+                    LogE("%s %s[%d] ⚠️ Fingerprint sensor initialization FAILED\n", 
+                         __FILE__, __FUNCTION__, __LINE__);
+                    
+                    // Retry initialization after delay
+                    QTimer::singleShot(0, q_ptr, [this]() {
+                        QTimer::singleShot(15000, q_ptr, [this]() {
+                            LogD("🔄 Retrying fingerprint sensor initialization...\n");
+                            InitFingerprintManager();
+                        });
+                    });
+                }
+                
+            } catch (const std::exception& e) {
+                LogE("%s %s[%d] ❌ Exception during fingerprint init: %s\n", 
+                     __FILE__, __FUNCTION__, __LINE__, e.what());
+            }
+        });
+    });
+    
+    LogD("%s %s[%d] Fingerprint manager created, sensor will initialize in 3 seconds\n", 
+         __FILE__, __FUNCTION__, __LINE__);
+}
+
+void FaceAppPrivate::startFingerprintHealthMonitoring()
+{
+    LogD("╔═══════════════════════════════════════╗\n");
+    LogD("║  🏥 STARTING UART HEALTH MONITORING   ║\n");
+    LogD("╚═══════════════════════════════════════╝\n");
+    
+    if (!m_pFingerprintManager) {
+        LogE("❌ Cannot start health monitoring - manager is null\n");
+        return;
+    }
+    
+    // Clean up existing timer if any
+    if (m_pFingerprintHealthTimer) {
+        m_pFingerprintHealthTimer->stop();
+        m_pFingerprintHealthTimer->deleteLater();
+    }
+    
+    // Create new health check timer
+    m_pFingerprintHealthTimer = new QTimer(q_ptr);
+    
+    QObject::connect(m_pFingerprintHealthTimer, &QTimer::timeout, q_ptr, [this]() {
+        if (!m_pFingerprintManager) {
+            return;
+        }
+        
+        // Perform health check (this will auto-recover if needed)
+        if (!m_pFingerprintManager->checkUARTHealth()) {
+            LogE("⚠️⚠️⚠️ Fingerprint UART health check FAILED!\n");
+            LogE("   Auto-recovery attempt in progress...\n");
+            
+            // Check if sensor is completely dead
+            if (!m_pFingerprintManager->isSensorReady()) {
+                LogE("❌ Sensor marked as NOT READY\n");
+                LogE("   Stopping monitoring and attempting full re-initialization...\n");
+                
+                // Stop monitoring
+                m_pFingerprintManager->stopContinuousMonitoring();
+                
+                // Stop health timer temporarily
+                if (m_pFingerprintHealthTimer) {
+                    m_pFingerprintHealthTimer->stop();
+                }
+                
+                // Wait 5 seconds then retry full initialization
+                QTimer::singleShot(5000, q_ptr, [this]() {
+                    LogD("🔄 Attempting full sensor re-initialization...\n");
+                    
+                    // Re-run initialization
+                    QtConcurrent::run([this]() {
+                        bool success = m_pFingerprintManager->initFingerprintSensor();
+                        
+                        if (success) {
+                            LogD("✅ Re-initialization successful!\n");
+                            
+                            // Restart monitoring in main thread
+                            QTimer::singleShot(0, q_ptr, [this]() {
+                                if (m_pFingerprintManager && m_pFingerprintManager->isSensorReady()) {
+                                    m_pFingerprintManager->startContinuousMonitoring();
+                                    
+                                    // Restart health timer
+                                    if (m_pFingerprintHealthTimer) {
+                                        m_pFingerprintHealthTimer->start(30000);
+                                    }
+                                }
+                            });
+                        } else {
+                            LogE("❌ Re-initialization failed, will retry in 15 seconds\n");
+                            
+                            QTimer::singleShot(0, q_ptr, [this]() {
+                                QTimer::singleShot(15000, q_ptr, [this]() {
+                                    InitFingerprintManager();
+                                });
+                            });
+                        }
+                    });
+                });
+            }
+        } else {
+            // Health check passed
+            static int healthCheckCount = 0;
+            healthCheckCount++;
+            
+            if (healthCheckCount % 10 == 0) {  // Log every 10 checks (5 minutes)
+                LogD("✅ Fingerprint UART health check passed (%d checks)\n", healthCheckCount);
+            }
+        }
+    });
+    
+    // Check every 30 seconds
+    m_pFingerprintHealthTimer->start(30000);
+    
+    LogD("✅ Health monitoring started\n");
+    LogD("   Interval: 30 seconds\n");
+    LogD("   Auto-recovery: Enabled\n");
+}
+
 
 void FaceAppPrivate::InitCallBack()
 {
@@ -365,85 +608,80 @@ QString FaceAppPrivate::GetParam(char *szParamName )
 
 void FaceAppPrivate::InitConnect()
 {
+    int type = 1;  //ReadConfig::GetInstance()->getFaceRecognVedor();
+    switch (type)
+    {		
+        case 0: //虹软	
+        break;
+        case 1://百度
+        {
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDrawFaceRect, m_pCameraManager, &CameraManager::slotDrawFaceRect,\
+                    Qt::QueuedConnection);
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pFaceMainFrm, &FaceMainFrm::slotDisMissMessage,\
+                    Qt::QueuedConnection);
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pCameraManager, &CameraManager::slotDisMissMessage,\
+                    Qt::QueuedConnection);			
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pIdentityManagement,
+                    &IdentityManagement::slotDisMissMessage, Qt::QueuedConnection);			
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigMatchCoreFace, m_pIdentityManagement,
+                    &IdentityManagement::slotMatchCoreFace, Qt::QueuedConnection);
+            QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigRecognizedPerson, m_pFaceMainFrm, 
+                &FaceMainFrm::slotDisplayRecognizedPerson, Qt::QueuedConnection);
+        }
+        break;
+    }
 
-	int type = 1;  //ReadConfig::GetInstance()->getFaceRecognVedor();
-	switch (type)
-	{		
-		case 0: //虹软	
-		break;
-		case 1://百度
-		{
-			QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDrawFaceRect, m_pCameraManager, &CameraManager::slotDrawFaceRect,\
-					Qt::QueuedConnection);
-			QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pFaceMainFrm, &FaceMainFrm::slotDisMissMessage,\
-					Qt::QueuedConnection);
-			QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pCameraManager, &CameraManager::slotDisMissMessage,\
-					Qt::QueuedConnection);			
-			QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pIdentityManagement,
-					&IdentityManagement::slotDisMissMessage, Qt::QueuedConnection);			
-			QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigMatchCoreFace, m_pIdentityManagement,
-					&IdentityManagement::slotMatchCoreFace, Qt::QueuedConnection);
-		}
-		break;
-  }
+    printf("%s %s[%d] UsbICCardObserver %p IdentityManagement %p \n",__FILE__,__FUNCTION__,__LINE__,UsbICCardObserver::GetInstance(),m_pIdentityManagement);
+    QObject::connect(UsbICCardObserver::GetInstance(), &UsbICCardObserver::sigReadIccardNum, m_pIdentityManagement,
+            &IdentityManagement::slotReadIccardNum, Qt::QueuedConnection);
+    QObject::connect(WiegandObserver::GetInstance(), &WiegandObserver::sigReadIccardNum, m_pIdentityManagement,
+            &IdentityManagement::slotReadIccardNum, Qt::QueuedConnection);
+    QObject::connect(UsbObserver::GetInstance(), &UsbObserver::sigUpDateTip, m_pFaceMainFrm, &FaceMainFrm::slotUpDateTip,
+            Qt::QueuedConnection);
+    
+    // ❌ REMOVE THE OLD FINGERPRINT CONNECTIONS FROM HERE
+    // They are now in InitFingerprintManager() where they belong!
+    
+    QObject::connect(m_pSensorManager, &SensorManager::sigTemperatureValue, m_pIdentityManagement,
+            &IdentityManagement::slotTemperatureValue, Qt::QueuedConnection);
 
-	printf("%s %s[%d] UsbICCardObserver %p IdentityManagement %p \n",__FILE__,__FUNCTION__,__LINE__,UsbICCardObserver::GetInstance(),m_pIdentityManagement);
-	QObject::connect(UsbICCardObserver::GetInstance(), &UsbICCardObserver::sigReadIccardNum, m_pIdentityManagement,
-			&IdentityManagement::slotReadIccardNum, Qt::QueuedConnection);
-	 QObject::connect(WiegandObserver::GetInstance(), &WiegandObserver::sigReadIccardNum, m_pIdentityManagement,
-	 		&IdentityManagement::slotReadIccardNum, Qt::QueuedConnection);
-	QObject::connect(UsbObserver::GetInstance(), &UsbObserver::sigUpDateTip, m_pFaceMainFrm, &FaceMainFrm::slotUpDateTip,
-			Qt::QueuedConnection);
- 			
-	QObject::connect(m_pSensorManager, &SensorManager::sigTemperatureValue, m_pIdentityManagement,
-			&IdentityManagement::slotTemperatureValue, Qt::QueuedConnection);
-	//健康码信息传递到算法识别处理线程
-	QObject::connect(m_pHealthCodeManage, &HealthCodeManage::sigHealthCodeInfo, m_pIdentityManagement,
-			&IdentityManagement::slotHealthCodeInfo, Qt::QueuedConnection);
+    QObject::connect(m_pHealthCodeManage, &HealthCodeManage::sigHealthCodeInfo, m_pIdentityManagement,
+            &IdentityManagement::slotHealthCodeInfo, Qt::QueuedConnection);
+                        
+    QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pPowerManagerThread, \
+            &powerManagerThread::slotDisMissMessage, Qt::QueuedConnection);
 
-	//QObject::connect(m_pHealthCodeManage, &HealthCodeManage::sigLRHealthCodeInfo, m_pIdentityManagement,\
-			&IdentityManagement::slotLRHealthCodeInfo, Qt::QueuedConnection);						
+    QString nParam = GetParam("IDENTITYCARD");
+    switch(nParam.toInt())
+    {
+        case 0:
+            QObject::connect(m_pIdentityCardManage, &IdentityCardManage::sigIdentityCardInfo, m_pIdentityManagement,\
+                    &IdentityManagement::slotIdentityCardInfo, Qt::QueuedConnection);	
+            QObject::connect(m_pIdentityCard_ZK_Manage, &IdentityCard_ZK_Manage::sigZKIdentityCardFullInfo, (IdentityManagement *)m_pIdentityManagement,\
+                    &IdentityManagement::slotIdentityCardFullInfo, Qt::QueuedConnection);	
+            break;
+        case 1: //点度
+            QObject::connect(m_pIdentityCard_DD_Manage, &IdentityCard_DD_Manage::sigIdentityCardInfoDD, m_pIdentityManagement,\
+                    &IdentityManagement::slotIdentityCardInfo, Qt::QueuedConnection);		
+            break;		  
+    }
 
-	//电源管理线程处理有人和没有人时的灯光状态
-	QObject::connect(m_pBaiduFaceManager, &BaiduFaceManager::sigDisMissMessage, m_pPowerManagerThread, \
-			&powerManagerThread::slotDisMissMessage, Qt::QueuedConnection);
-
-	//身份证信息传递到算法识别处理线程
-	QString nParam = GetParam("IDENTITYCARD");
-	switch(nParam.toInt())
-	{
-		case 0:
-	QObject::connect(m_pIdentityCardManage, &IdentityCardManage::sigIdentityCardInfo, m_pIdentityManagement,\
-			&IdentityManagement::slotIdentityCardInfo, Qt::QueuedConnection);	
-	QObject::connect(m_pIdentityCard_ZK_Manage, &IdentityCard_ZK_Manage::sigZKIdentityCardFullInfo, (IdentityManagement *)m_pIdentityManagement,\
-			&IdentityManagement::slotIdentityCardFullInfo, Qt::QueuedConnection);	
-
-		  break;
-		case 1: //点度
-	QObject::connect(m_pIdentityCard_DD_Manage, &IdentityCard_DD_Manage::sigIdentityCardInfoDD, m_pIdentityManagement,\
-			&IdentityManagement::slotIdentityCardInfo, Qt::QueuedConnection);		
-		  break;		  
-	
-
-	}
-
-	//身份证信息传递到健康码中查询健康码
+    // 身份证信息传递到健康码中查询健康码
     QObject::connect(m_pIdentityManagement, &IdentityManagement::sigDKQueryHealthCode, m_pHealthCodeManage, &HealthCodeManage::slotDKQueryHealthCode, Qt::QueuedConnection);
-    //图片空间管理线程处理
-		
-	QObject::connect(ShrinkFaceImageThread::GetInstance(), &ShrinkFaceImageThread::sigShrinkTip, m_pFaceMainFrm, &FaceMainFrm::slotUpDateTip,Qt::QueuedConnection);
+    
+    // 图片空间管理线程处理
+    QObject::connect(ShrinkFaceImageThread::GetInstance(), &ShrinkFaceImageThread::sigShrinkTip, m_pFaceMainFrm, &FaceMainFrm::slotUpDateTip,Qt::QueuedConnection);
 
-	QObject::connect(m_pIdentityManagement, &IdentityManagement::sigTipsMessage, m_pFaceMainFrm, &FaceMainFrm::slotTipsMessage,
-			Qt::QueuedConnection);
-	QObject::connect(m_pIdentityManagement, &IdentityManagement::sigShowHealthCode, m_pFaceMainFrm, &FaceMainFrm::slotHealthCodeInfo,
-			Qt::QueuedConnection);
-//	QObject::connect(m_pIdentityManagement, &IdentityManagement::sigShowLRHealthCode, m_pFaceMainFrm, &FaceMainFrm::slotLRHealthCodeInfo,			Qt::QueuedConnection);	
-	QObject::connect(m_pLRHealthCode, &LRHealthCode::sigLRHealthCodeMsg, m_pIdentityManagement, &IdentityManagement::slotLRHealthCodeInfo2,
-			Qt::QueuedConnection);
-	QObject::connect(m_pIdentityManagement, &IdentityManagement::sigShowAlgoStateAboutFace, m_pFaceMainFrm, &FaceMainFrm::slotShowAlgoStateAboutFace,
-			Qt::QueuedConnection);
-
+    QObject::connect(m_pIdentityManagement, &IdentityManagement::sigTipsMessage, m_pFaceMainFrm, &FaceMainFrm::slotTipsMessage,
+            Qt::QueuedConnection);
+    QObject::connect(m_pIdentityManagement, &IdentityManagement::sigShowHealthCode, m_pFaceMainFrm, &FaceMainFrm::slotHealthCodeInfo,
+            Qt::QueuedConnection);
+    QObject::connect(m_pLRHealthCode, &LRHealthCode::sigLRHealthCodeMsg, m_pIdentityManagement, &IdentityManagement::slotLRHealthCodeInfo2,
+            Qt::QueuedConnection);
+    QObject::connect(m_pIdentityManagement, &IdentityManagement::sigShowAlgoStateAboutFace, m_pFaceMainFrm, &FaceMainFrm::slotShowAlgoStateAboutFace,
+            Qt::QueuedConnection);
 }
+
 
 void FaceApp::Sleep(int sec)
 {
@@ -516,6 +754,11 @@ RecordsExport *FaceApp::GetRecordsExport()
 	return instance()->d_func()->m_pRecordsExport;
 }
 
+PostPersonRecordThread *FaceApp::GetPostPersonRecordThread()
+{
+    return instance()->d_func()->m_pPostPersonRecordThread;
+}
+
 powerManagerThread *FaceApp::GetPowerManagerThread()
 {
 	
@@ -535,4 +778,9 @@ IdentityCardManage *FaceApp::GetIdentityCardManage()
 IdentityCard_ZK_Manage *FaceApp::GetIdentityCard_ZK_Manage()
 {
 	return instance()->d_func()->m_pIdentityCard_ZK_Manage;
+}
+
+FingerprintManager *FaceApp::GetFingerprintManager()
+{
+    return instance()->d_func()->m_pFingerprintManager;
 }

@@ -29,9 +29,9 @@ namespace bface {
 #define BD_LIVENESS_DEPTH_HIGH   0.9
 
 // Poss, value must be less than thresold
-#define BD_QUALITY_POSE_LOW     30
-#define BD_QUALITY_POSE_NORMAL  20
-#define BD_QUALITY_POSE_HIGH    15
+#define BD_QUALITY_POSE_LOW     15
+#define BD_QUALITY_POSE_NORMAL  10
+#define BD_QUALITY_POSE_HIGH    05
 
 // occlusion value must be less than the thresold
 #define BD_QUALITY_OCCLUSION_LOW     0.8

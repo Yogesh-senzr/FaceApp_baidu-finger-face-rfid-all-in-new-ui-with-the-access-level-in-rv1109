@@ -17,6 +17,15 @@ private:
     Q_SLOT void slotProgressShell(const bool, const int total, const int, const int, const int);
 private:
     Q_SIGNAL void sigParseXlsxPath(const QString);
+
+public slots:
+    void slotAddFaceButtonClicked();
+    void slotFaceDataUpdated(const QString &uuid);
+    void slotAddFaceProgressShell(bool isFinished, int total, int current, int successCount, int failCount);
+
+signals:
+    void sigAddFaceFromXlsx(const QString path);
+    void sigUpdateUserList();
 private:
     virtual void setEnter();
 private:

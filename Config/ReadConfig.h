@@ -3,6 +3,8 @@
 
 #include <QtCore/QObject>
 
+
+
 class ReadConfigPrivate;
 class ReadConfig : public QObject
 {
@@ -15,6 +17,10 @@ public:
 public:
     void setReadConfig();
     void setSaveConfig();
+    bool getTestVerifiedMessage() const;
+    bool getTestIconMessage() const;
+    void setTestVerifiedMessage(bool enable);
+    void setTestIconMessage(bool enable);
 public:
     int getTempSensorType()const;
     int getIrCameraRotation()const;
@@ -169,17 +175,31 @@ public:
 public:
     int getSyncEnabled() const;  // Function to get sync state
     void setSyncEnabled(int state);  // Function to set sync state
-    
+    QString getHeartbeat_TenantId();
+void setHeartbeat_TenantId(const QString& value);
+
+QString getHeartbeat_AttendanceMode();
+void setHeartbeat_AttendanceMode(const QString& value);
+
+QString getHeartbeat_DeviceStatus();
+void setHeartbeat_DeviceStatus(const QString& value);
+QString getHeartbeat_DoorId() const;
+void setHeartbeat_DoorId(const QString& doorId);
+
+QString getDoor_AccessLevel() const;
+void setDoor_AccessLevel(const QString &level);
+
 
 public:
     QString getDeviceSerialNumber() const;
     void setDeviceSerialNumber(const QString &serialNumber);
 private:
     QScopedPointer<ReadConfigPrivate>d_ptr;
+    bool m_testVerifiedMessage = false;
+    bool m_testIconMessage = false;
 private:
     Q_DECLARE_PRIVATE(ReadConfig)
     Q_DISABLE_COPY(ReadConfig)
 };
 
 #endif // READCONFIG_H
-

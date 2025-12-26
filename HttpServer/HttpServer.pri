@@ -9,7 +9,6 @@ HEADERS += \
     $$PWD/protocol.h \
     $$PWD/ConnHttpServerThread.h \
     $$PWD/PostPersonRecordThread.h \
-    $$PWD/PersonRegistrationThread.h \
     $$PWD/UdpBroadcastThread.h \
 
 
@@ -18,7 +17,6 @@ SOURCES += \
     $$PWD/protocol.cpp \
     $$PWD/ConnHttpServerThread.cpp \
     $$PWD/PostPersonRecordThread.cpp \
-    $$PWD/PersonRegistrationThread.cpp \
     $$PWD/UdpBroadcastThread.cpp \
 
 

@@ -22,12 +22,21 @@ public:
 
     //显示算法相关当前人脸参数
     void setAlgoStateAboutFace(const QString &);
+    void setPersonImage(const QString &imagePath, const QString &personName);
+    void clearPersonImage();
 public:
     void setHomeDisplay_SnNum(const int &);
     void setHomeDisplay_Mac(const int &);
     void setHomeDisplay_IP(const int &);
     void setHomeDisplay_PersonNum(const int &);
-    void setHomeDisplay_DoorLock(const int &);    
+    void setHomeDisplay_DoorLock(const int &);
+     
+     // New sync-related methods
+    void setTenantName(const QString &tenantName);
+    void updateSyncUserCount(int currentCount, int totalCount);
+    void updateSyncStatus(const QString &status);
+    void updateLastSyncTime(const QString &time); 
+    void updateLocalFaceCount(int localCount, int totalCount);  // New method  
 public:
     void setTopMessageHintText_1(const QString &);
     void setTopMessageHintText_1_AlarmTemperature(const QString &);

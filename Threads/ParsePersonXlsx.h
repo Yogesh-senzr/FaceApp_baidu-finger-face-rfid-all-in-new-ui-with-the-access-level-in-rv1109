@@ -13,6 +13,13 @@ public:
 public:
     Q_SLOT void slotParseXlsxPath(const QString);//解析xlsx路径
     Q_SLOT void slotExportPersons();//导出人员信息
+
+public slots:
+    void slotAddFaceDataFromXlsx(const QString Path);
+
+signals:
+    void sigAddFaceProgressShell(bool isFinished, int total, int current, int successCount, int failCount);
+    void sigFaceDataUpdated(const QString &uuid);
 public:
     //处理进度（是否完成、总数量、当前处理条数、成功记录、失败记录）
     Q_SIGNAL void sigImportProgressShell(const bool, const int total, const int dealcnt, const int succeedcnt, const int failcnt);

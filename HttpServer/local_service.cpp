@@ -17,15 +17,13 @@
 
 int local_service_init(char *ip_addr)
 {
-	//  g_local_service = new LocalService();
-	LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
 	start_papi_protocol(ip_addr);
 	return 0;
 }
 
 int local_service_exit()
 {
-	LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
+	
 	stop_papi_protocol();
 
 	return 0;
@@ -50,7 +48,7 @@ LocalServicePrivate::LocalServicePrivate(LocalService *dd) :
 
 void LocalService::slotAppRecordData(const IdentifyFaceRecord_t)
 {
-	LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
+	
 }
 
 LocalService::LocalService(QObject *parent) :

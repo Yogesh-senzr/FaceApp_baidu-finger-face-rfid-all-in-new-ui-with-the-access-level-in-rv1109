@@ -15,7 +15,7 @@ private:
     virtual void setEnter();//进入
 private:
     Q_SLOT void slotSaveButtonClicked();
-    Q_SLOT void slotLanSwitchState(const int state);
+    Q_SLOT void slotLanSwitchState(const int state);  // Keep original signature
 private:
     QScopedPointer<EthernetViewFrmPrivate>d_ptr;
 #ifdef SCREENCAPTURE  //ScreenCapture     

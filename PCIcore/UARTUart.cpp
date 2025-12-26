@@ -234,8 +234,8 @@ int YNH_LJX::UARTUart::set_opt(int fd,int nSpeed, int nBits, char nEvent, int nS
         newtio.c_cflag &= ~CSTOPB;
     else if ( nStop == 2 )
         newtio.c_cflag |= CSTOPB;
-    newtio.c_cc[VTIME] = nWaitTime;
-    newtio.c_cc[VMIN] = nWaitMinByte;
+        newtio.c_cc[VTIME] = 0;  // Always 0 for select() apps
+        newtio.c_cc[VMIN] = 0;   // Always 0 for select() apps
     tcflush(fd,TCIFLUSH);
     if((tcsetattr(fd,TCSANOW,&newtio))!=0)
     {
@@ -453,4 +453,13 @@ int YNH_LJX::UARTUart::Uart_CloseUartDev(unsigned int nUartDevIndex) {
         return ISC_OK;
     }
     return -1;
+}
+
+int YNH_LJX::UARTUart::Uart_GetFileDescriptor(unsigned int index)
+{
+    if (index >= UART_NUM_MAX) {
+        printf("serial %d not exist \n", index);
+        return -1;
+    }
+    return fd[index];
 }

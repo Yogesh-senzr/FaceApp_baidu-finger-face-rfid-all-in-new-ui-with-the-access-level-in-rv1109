@@ -2,6 +2,7 @@
 #define FACEMAINFRM_H
 #include "RKCamera/Camera/cameramanager.h"
 #include <QWidget>
+#include <QLabel>
 
 class FaceMainFrmPrivate;
 class FaceMainFrm : public QWidget
@@ -25,8 +26,15 @@ public:
     void setHomeDisplay_PersonNum(const int &);
     void setHomeDisplay_DoorLock(const int &);    
     void updateHome_PersonNum();
-    //这个函数有问题，会导致 FaceMainFrm 这个类重复实例化，在最开始的时候已经实例化过该类的一个实例了
-    //static inline FaceMainFrm *GetInstance(){static FaceMainFrm g;return &g;}	
+    void showThreadInfo();
+        // Add these new sync-related methods
+    void setTenantName(const QString &tenantName);
+    void updateSyncStatus(const QString &status);
+    void updateSyncUserCount(int currentCount, int totalCount);
+    void updateLastSyncTime(const QString &time);
+    void updateLocalFaceCount(int localCount, int totalCount);  // New method
+    void triggerSettings();
+
 public:
      //固件更新
     Q_SLOT void slotUpDateTip(const QString);
@@ -38,17 +46,35 @@ public:
     Q_SLOT void slotHealthCodeInfo(const int type, const QString name, const QString idCard, const int qrCodeType, const double warningTemp, const QString msg);
 
     Q_SLOT void slotShowAlgoStateAboutFace(const QString);
+        // ADD THESE TWO NEW SLOTS:
+    Q_SLOT void setPersonImage(const QString &imagePath, const QString &personName);
+    Q_SLOT void clearPersonImage();
+    Q_SLOT void slotDisplayRecognizedPerson(const QString &name, const int &personId, 
+                                             const QString &uuid, const QString &idcard);
+    Q_SLOT void slotScreenTimeout();
+    Q_SLOT void slotScreenWakeUp();
+    Q_SLOT void slotUpdateTimerClock(); 
 private://显示人脸主界面
     Q_SLOT void slotShowFaceHomeFrm(const int index);
+    Q_SLOT void handleImageLoaded(const QPixmap &pixmap, const QString &imagePath);
 private:
     Q_SLOT void onReady();
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override;
 private:
 	int mstatus = 0; //0:没进入设置界面是, 1:进入设置界面
     void mouseDoubleClickEvent(QMouseEvent *event);
     void mouseClickEvent(QMouseEvent *event);
     void mousePressEvent(QMouseEvent *event);
     void paintEvent(QPaintEvent *event);
-        
+    void createInstantPopupWithPlaceholder(const QString &name, int personId, const QString &idcard);
+    void loadFaceImageAsync(const QString &name, int personId, const QString &uuid, const QString &idcard = QString());
+    QString findFaceImageFast(int personId, const QString &name);
+    void updatePopupWithImage(const QPixmap &pixmap, const QString &imagePath);
+    bool isValidFaceCrop(const QImage &img);
+    QString getEmployeeIdFromPersonId(int personId);
+    QString getImagePathFromDatabase(const QString &employeeId);
+    QString findStoredFaceImage(int personId, const QString &name, const QString &uuid, const QString &idcard);
 public:
     CameraManager *m_pFaceCameraManager;  
     QString mPath;

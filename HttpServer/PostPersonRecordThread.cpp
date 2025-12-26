@@ -36,6 +36,11 @@
 #include <QtCore/QDir>
 #include <QtCore/QFileInfoList>
 #include <QtCore/QDebug>
+#include <QtSql/QSqlQuery>
+#include <QtSql/QSqlDatabase>
+#include <QTimer>
+#include <QDateTime>
+#include <QSqlError>
 
 class PostPersonRecordThreadPrivate
 {
@@ -54,9 +59,16 @@ private:
 	QWaitCondition pauseCond;
 	int threadDelay;
 	QList<QString> picList;
+	 bool isManualPushInProgress;
+    QMutex manualPushMutex;
+    QDateTime manualPushStartDateTime;
+    QDateTime manualPushEndDateTime;
+
 
 private:
 	QString doPostJson(Json::Value json);
+	int doManualPushRecords(const QDateTime &startDateTime, const QDateTime &endDateTime);
+	
 
 private:
 	PostPersonRecordThread * const q_ptr;
@@ -152,7 +164,6 @@ static std::string fileToBase64String(std::string strFilePath)
 						break;
 					}
 				}
-				printf("%s %s[%d] \n",__FILE__,__FUNCTION__,__LINE__);
 				base_64 = cereal::base64::encode((unsigned char const*) pTmpBuf, (size_t) _stat.st_size);
 				free(pTmpBuf);
 			}
@@ -167,7 +178,6 @@ static size_t download_write_data(void *ptr, size_t size, size_t nmemb, void* us
 	int fd = (int) userdata;
 	if (fd <= 0)
 	{
-		LogE("%s %s[%d] fd :%d\n", __FILE__, __FUNCTION__, __LINE__, fd);
 		return 0;
 	}
 	int written = write(fd, ptr, size * nmemb);
@@ -305,7 +315,6 @@ QString PostPersonRecordThreadPrivate::doPostJson(Json::Value json)
 	cmd += jsonStr.c_str();
 	cmd += "'";
 	std::string rets = "";
-	//LogD("%s %s[%d] cmd %s \n", __FILE__, __FUNCTION__, __LINE__, cmd.c_str());
 	FILE* pFile = popen(cmd.c_str(), "r");
 	if (pFile != ISC_NULL)
 	{
@@ -325,6 +334,13 @@ QString PostPersonRecordThreadPrivate::doPostJson(Json::Value json)
 		{
 			resultString = rets;
 		}
+		if (resultString.size() > 3)
+	{
+		
+	} else {
+		
+	}
+
 	}
 #endif 
 		
@@ -376,7 +392,7 @@ QString PostPersonRecordThreadPrivate::doPostJson(Json::Value json)
 #endif 		
 	//if (resultString.size() > 3)
 	{
-		LogD("%s %s[%d] ret %s \n", __FILE__, __FUNCTION__, __LINE__, resultString.c_str());
+
 	}
 	return QString::fromStdString(resultString);
 }
@@ -390,15 +406,13 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 
 	if (mPostPersonRecordServerUrl.size() < 3)
 	{
+		
 		return delay;
 	}
 
 	std::string start_time = "1979/01/01 00:00:01";
 	std::string end_time = getTime3();
 	QString resultMsg = "";
-		//LogD("%s %s[%d] per_page %s \n", __FILE__, __FUNCTION__, __LINE__, per_page.c_str());
-		//LogD("%s %s[%d] start_time %s \n", __FILE__, __FUNCTION__, __LINE__, start_time.c_str());
-		//LogD("%s %s[%d] end_time %s \n", __FILE__, __FUNCTION__, __LINE__, end_time.c_str());
 
 	int nPerPage = 1;
 	int nTotalCount = 0;
@@ -410,7 +424,6 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 	nTotalCount = PersonRecordToDB::GetInstance()->GetPersonRecordTotalNumByDateTime(startDateTime, endDateTime, true);
 	list = PersonRecordToDB::GetInstance()->GetPersonRecordDataByDateTime(1, nPerPage, startDateTime, endDateTime, true);
 	nDataCount = list.size();
-//LogD("%s %s[%d] nTotalCount=%d,nDataCount=%d \n", __FILE__, __FUNCTION__, __LINE__, nTotalCount,nDataCount);
 	Json::Value json;
 	std::string timestamp;
 	std::string password;
@@ -446,31 +459,28 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 			int nArleadyPostPersonRecordIndex = -1;
 			for (int i = 0; i < picList.size(); i++)
 			{
-				//LogD("%s %s[%d] FaceImgPath=%s,picList[i]=%s \n", __FILE__, __FUNCTION__, __LINE__, t.FaceImgPath.toStdString().c_str(),picList[i].toStdString().c_str());
-				if (picList[i] == t.FaceImgPath)
 				{
 					nArleadyPostPersonRecordIndex = i;
-					LogD("%s %s[%d] already post rid %s %s \n", __FILE__, __FUNCTION__, __LINE__, std::to_string(t.rid).c_str(),t.FaceImgPath.toStdString().c_str());
 					break;
 				}
 			}
-			//LogD("%s %s[%d] nArleadyPostPersonRecordIndex=%d \n", __FILE__, __FUNCTION__, __LINE__, nArleadyPostPersonRecordIndex);
 			if (nArleadyPostPersonRecordIndex > -1)
 			{
 				picList.removeAt(nArleadyPostPersonRecordIndex);
-				//LogD("%s %s[%d]  rid %s \n", __FILE__, __FUNCTION__, __LINE__, std::to_string(t.rid).c_str());
 				PersonRecordToDB::GetInstance()->UpdatePersonRecordUploadFlag(t.rid, true);
 				return delay;
 			}
 
 			Json::Value data;
 			rid = t.rid;
-			//LogD("%s %s[%d] rid %ld \n", __FILE__, __FUNCTION__, __LINE__, rid);
 
-			if (t.FaceImgPath !="/mnt/user/face_crop_image")
-			  data["crop_data"] = fileToBase64String(t.FaceImgPath.toStdString().c_str());
+			if (t.FaceImgPath != "/mnt/user/face_crop_image") {
+				std::string base64Data = fileToBase64String(t.FaceImgPath.toStdString().c_str());
+				data["crop_data"] = base64Data;
+				if (base64Data.length() > 50) {
+				}
+			}
 
-			//LogD("%s %s[%d] FaceImgPath= %s \n", __FILE__, __FUNCTION__, __LINE__, t.FaceImgPath.toStdString().c_str());
 			data["card_no"] = t.face_iccardnum.toStdString().c_str();
 			data["male"] = t.face_sex.toStdString().c_str();
 			data["id_card_no"] = t.face_idcardnum.toStdString().c_str();
@@ -490,8 +500,6 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 		json["total_page"] = std::to_string(nTotalCount / nPerPage);
 		json["result"] = "1";
 		json["success"] = "1";
-		LogD("%s %s[%d] count %d per_page %d total_page %d \n", __FILE__, __FUNCTION__, __LINE__, nDataCount, nDataCount,
-				nTotalCount / nPerPage);
 	}
 
 	bool isNeedSleep = false;
@@ -506,7 +514,7 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 	}
 	if (isPostData)
 	{
-		//LogD("%s %s[%d]   \n", __FILE__, __FUNCTION__, __LINE__);
+		
 		QString ret = doPostJson(json);
 		if (ret.size() > 0)
 		{
@@ -522,7 +530,6 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 		{
 			isNeedSleep = true;
 		}
-		//LogD("%s %s[%d]   \n", __FILE__, __FUNCTION__, __LINE__);
 		if (stMsg.msg_type == std::string("post_offine_record_done"))
 		{
 
@@ -533,12 +540,10 @@ int PostPersonRecordThreadPrivate::doPostPersonRecord()
 				for (int i = 0; i < sections.size(); i++)
 				{
 					int rid = sections[i].toInt();
-					//LogD("%s %s[%d]  rid %d \n", __FILE__, __FUNCTION__, __LINE__, rid);
 					PersonRecordToDB::GetInstance()->UpdatePersonRecordUploadFlag(rid, true);
 				}
 			} else
 			{
-				//LogD("%s %s[%d]  rIDs %d \n", __FILE__, __FUNCTION__, __LINE__, rIDs.toInt());
 				PersonRecordToDB::GetInstance()->UpdatePersonRecordUploadFlag(rIDs.toInt(), true);
 			}
 #if 0			
@@ -581,37 +586,308 @@ PostPersonRecordThread::~PostPersonRecordThread()
 
 void PostPersonRecordThread::run()
 {
-	Q_D(PostPersonRecordThread);
-	sleep(20);
-	while (true)
-	{
-	//LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);		
-		d->sync.lock();
-		int delay = 10;
-		d->mSN = myHelper::getCpuSerial();
-		d->mPostPersonRecordServerUrl = ReadConfig::GetInstance()->getPost_PersonRecord_Address();
-		d->mPostPersonRecordServerPassword = ReadConfig::GetInstance()->getPost_PersonRecord_Password();
+    Q_D(PostPersonRecordThread);
+    sleep(20);
+    
+    // Set thread to lowest priority for manual push operations
+    setPriority(QThread::LowestPriority);
+    
+    int storageCheckCounter = 0;
+    const int STORAGE_CHECK_INTERVAL = 10;
+    
+    while (true)
+    {
+        d->sync.lock();
+        int delay = 10;
+        d->mSN = myHelper::getCpuSerial();
+        d->mPostPersonRecordServerUrl = ReadConfig::GetInstance()->getPost_PersonRecord_Address();
+        d->mPostPersonRecordServerPassword = ReadConfig::GetInstance()->getPost_PersonRecord_Password();
 
-		if (d->mPostPersonRecordServerUrl.size() > 3)
-		{
-			delay = d->doPostPersonRecord();
-		}
-		//LogD("%s %s[%d] delay=%d\n", __FILE__, __FUNCTION__, __LINE__,delay);
-		d->pauseCond.wait(&d->sync, delay * 1000);
-		d->sync.unlock();
-	}
+        // Check if manual push is requested
+        bool manualPushRequested = false;
+        QDateTime pushStart, pushEnd;
+        
+        {
+            QMutexLocker locker(&d->manualPushMutex);
+            if (d->isManualPushInProgress)
+            {
+                manualPushRequested = true;
+                pushStart = d->manualPushStartDateTime;
+                pushEnd = d->manualPushEndDateTime;
+            }
+        }
+
+        // Process manual push if requested (HIGHEST PRIORITY)
+        if (manualPushRequested)
+        {
+            LogD("%s %s[%d] Processing manual push request...", __FILE__, __FUNCTION__, __LINE__);
+            delay = d->doManualPushRecords(pushStart, pushEnd);
+            
+            // Reset manual push state
+            QMutexLocker locker(&d->manualPushMutex);
+            d->isManualPushInProgress = false;
+            
+            // After manual push, wait longer before normal operations
+            delay = 30;
+        }
+        else
+        {
+            // Normal operations - periodic storage check
+            //storageCheckCounter++;
+            //if (storageCheckCounter >= STORAGE_CHECK_INTERVAL) {
+               // LogD("%s %s[%d] Performing periodic storage check...", __FILE__, __FUNCTION__, __LINE__);
+                //d->checkAndCleanupStorage();
+                //storageCheckCounter = 0;
+            //}
+
+            // Regular automatic push
+            if (d->mPostPersonRecordServerUrl.size() > 3)
+            {
+                delay = d->doPostPersonRecord();
+            }
+        }
+        
+        d->pauseCond.wait(&d->sync, delay * 1000);
+        d->sync.unlock();
+    }
+}
+
+int PostPersonRecordThreadPrivate::doManualPushRecords(const QDateTime &startDateTime, const QDateTime &endDateTime)
+{
+    LogD("=== MANUAL PUSH STARTED ===");
+    LogD("%s %s[%d] Manual push time range: %s to %s", 
+         __FILE__, __FUNCTION__, __LINE__,
+         startDateTime.toString("yyyy/MM/dd hh:mm:ss").toStdString().c_str(),
+         endDateTime.toString("yyyy/MM/dd hh:mm:ss").toStdString().c_str());
+
+    if (mPostPersonRecordServerUrl.size() < 3)
+    {
+        LogE("%s %s[%d] No server URL configured for manual push", __FILE__, __FUNCTION__, __LINE__);
+        emit q_func()->sigManualPushComplete(false, "Server URL not configured");
+        return 5;
+    }
+
+    // Get total count of unpushed records in the date range
+    int nTotalCount = PersonRecordToDB::GetInstance()->GetPersonRecordTotalNumByDateTime(
+    startDateTime, endDateTime, false);  // ← false = ALL records
+    
+    LogD("%s %s[%d] Found %d unpushed records in date range", 
+         __FILE__, __FUNCTION__, __LINE__, nTotalCount);
+
+    if (nTotalCount == 0)
+    {
+        LogD("%s %s[%d] No unpushed records found in the selected date range", 
+             __FILE__, __FUNCTION__, __LINE__);
+        emit q_func()->sigManualPushComplete(true, "No unpushed records found");
+        return 5;
+    }
+
+    int nProcessedCount = 0;
+    int nSuccessCount = 0;
+    int nFailedCount = 0;
+    const int BATCH_SIZE = 5; // Process 5 records per batch
+
+    // Process records in batches
+    while (nProcessedCount < nTotalCount)
+    {
+        // Check if manual push was cancelled
+        QMutexLocker locker(&manualPushMutex);
+        if (!isManualPushInProgress)
+        {
+            LogD("%s %s[%d] Manual push cancelled by user", __FILE__, __FUNCTION__, __LINE__);
+            emit q_func()->sigManualPushComplete(false, "Push cancelled");
+            return 5;
+        }
+        locker.unlock();
+
+        // Get next batch of records
+        int currentPage = (nProcessedCount / BATCH_SIZE) + 1;
+        QList<IdentifyFaceRecord_t> list = PersonRecordToDB::GetInstance()->GetPersonRecordDataByDateTime(
+    currentPage, BATCH_SIZE, startDateTime, endDateTime, false);  // ← false = ALL records
+
+        if (list.isEmpty())
+        {
+            break;
+        }
+
+        LogD("%s %s[%d] Processing batch %d: %d records", 
+             __FILE__, __FUNCTION__, __LINE__, currentPage, list.size());
+
+        // Process each record in the batch
+        for (int i = 0; i < list.size(); i++)
+        {
+            auto &t = list[i];
+            
+            Json::Value json;
+            std::string timestamp = getTime();
+            std::string password = mPostPersonRecordServerPassword.toStdString() + timestamp;
+            password = md5sum(password);
+            password = md5sum(password);
+            transform(password.begin(), password.end(), password.begin(), ::tolower);
+
+            json["msg_type"] = "post_offine_record";
+            json["sn"] = mSN.toStdString().c_str();
+            json["tenantId"] = ReadConfig::GetInstance()->getHeartbeat_TenantId().toStdString().c_str();
+            json["attendanceMode"] = ReadConfig::GetInstance()->getHeartbeat_AttendanceMode().toStdString().c_str();
+            json["deviceStatus"] = ReadConfig::GetInstance()->getHeartbeat_DeviceStatus().toStdString().c_str();
+            json["entry"] = "authorized";
+            json["timestamp"] = timestamp.c_str();
+            json["password"] = password.c_str();
+            json["cmd_id"] = "";
+            json["dev_name"] = "";
+            json["location"] = "";
+            json["message"] = "post_offine_record_manual";
+
+            Json::Value data;
+            data["card_no"] = t.face_iccardnum.toStdString().c_str();
+            data["male"] = t.face_sex.toStdString().c_str();
+            data["id_card_no"] = t.face_idcardnum.toStdString().c_str();
+            data["person_name"] = t.face_name.toStdString().c_str();
+            data["time"] = t.createtime.toString("yyyy/MM/dd hh:mm:ss").toStdString().c_str();
+            data["person_uuid"] = t.face_uuid.toStdString().c_str();
+            data["id"] = t.face_id.toStdString().c_str();
+            data["Identifyed"] = std::to_string(t.Identifyed).c_str();
+            data["rID"] = std::to_string(t.rid).c_str();
+            data["group"] = t.face_gids.toStdString().c_str();
+            data["person_type"] = std::to_string(t.face_persontype).c_str();
+            data["face_mack"] = std::to_string(t.face_mack).c_str();
+            data["temp_value"] = std::to_string(t.temp_value).c_str();
+
+            json["data"].append(data);
+            json["per_page"] = "1";
+            json["count"] = "1";
+            json["result"] = "1";
+            json["success"] = "1";
+
+            // Post the record
+            QString ret = doPostJson(json);
+            
+            bool postSuccess = false;
+            if (ret.size() > 0)
+            {
+                Json::Reader reader;
+                Json::Value root;
+                if (reader.parse(ret.toStdString(), root))
+                {
+                    std::string msg_type = root["msg_type"].asString();
+                    if (msg_type == "post_offine_record_done")
+                    {
+                        PersonRecordToDB::GetInstance()->UpdatePersonRecordUploadFlag(t.rid, true);
+                        nSuccessCount++;
+                        postSuccess = true;
+                        LogD("%s %s[%d] Manual push success for record %ld - %s", 
+                             __FILE__, __FUNCTION__, __LINE__, t.rid, 
+                             t.face_name.toStdString().c_str());
+                    }
+                }
+            }
+            
+            if (!postSuccess)
+            {
+                nFailedCount++;
+                LogE("%s %s[%d] Manual push failed for record %ld - %s", 
+                     __FILE__, __FUNCTION__, __LINE__, t.rid, 
+                     t.face_name.toStdString().c_str());
+            }
+
+            nProcessedCount++;
+            
+            // Emit progress update
+            emit q_func()->sigManualPushProgress(nProcessedCount, nTotalCount, postSuccess);
+            
+            // Small delay between records to avoid overwhelming server
+            QThread::msleep(100);
+        }
+
+        // Small delay between batches
+        QThread::msleep(500);
+    }
+
+    LogD("=== MANUAL PUSH COMPLETED ===");
+    LogD("%s %s[%d] Total: %d, Success: %d, Failed: %d", 
+         __FILE__, __FUNCTION__, __LINE__, nTotalCount, nSuccessCount, nFailedCount);
+
+    QString resultMsg = QString("Pushed %1/%2 records successfully").arg(nSuccessCount).arg(nTotalCount);
+    emit q_func()->sigManualPushComplete(true, resultMsg);
+
+    return 5;
+}
+
+void PostPersonRecordThread::slotManualPushRecords(const QDateTime &startDateTime, const QDateTime &endDateTime)
+{
+    Q_D(PostPersonRecordThread);
+    
+    QMutexLocker locker(&d->manualPushMutex);
+    
+    // Check if manual push is already in progress
+    if (d->isManualPushInProgress)
+    {
+        LogD("%s %s[%d] Manual push already in progress, ignoring request", 
+             __FILE__, __FUNCTION__, __LINE__);
+        emit sigManualPushComplete(false, "Push already in progress");
+        return;
+    }
+
+    // Validate date range
+    if (!startDateTime.isValid() || !endDateTime.isValid())
+    {
+        LogE("%s %s[%d] Invalid date/time range for manual push", __FILE__, __FUNCTION__, __LINE__);
+        emit sigManualPushComplete(false, "Invalid date/time range");
+        return;
+    }
+
+    if (startDateTime > endDateTime)
+    {
+        LogE("%s %s[%d] Start date/time is after end date/time", __FILE__, __FUNCTION__, __LINE__);
+        emit sigManualPushComplete(false, "Invalid date range: start is after end");
+        return;
+    }
+
+    // Set manual push state
+    d->isManualPushInProgress = true;
+    d->manualPushStartDateTime = startDateTime;
+    d->manualPushEndDateTime = endDateTime;
+    
+    LogD("%s %s[%d] Manual push initiated for range: %s to %s", 
+         __FILE__, __FUNCTION__, __LINE__,
+         startDateTime.toString("yyyy/MM/dd hh:mm:ss").toStdString().c_str(),
+         endDateTime.toString("yyyy/MM/dd hh:mm:ss").toStdString().c_str());
+
+    // Wake up the thread to process manual push
+    d->pauseCond.wakeOne();
+}
+
+bool PostPersonRecordThread::pushRecordToServer(const QString &name, const QString &time, 
+                                                 const QString &imgPath, int rid)
+{
+    // TODO: Implement your actual HTTP POST logic here
+    // This is a placeholder - replace with your actual server communication
+    
+    // Example using QNetworkAccessManager:
+    // QNetworkRequest request(QUrl("http://your-server.com/api/attendance"));
+    // QJsonObject json;
+    // json["name"] = name;
+    // json["time"] = time;
+    // json["rid"] = rid;
+    // ... send request and wait for response
+    
+    qDebug() << "Pushing record:" << rid << name << time;
+    
+    // Return true if successful, false if failed
+    return true; // Placeholder
 }
 
 void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 {
-	//LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
 	Q_D(PostPersonRecordThread);
 	//d->sync.unlock();
 	//QMutexLocker lock(&d->sync); //不用加锁
-
 	Json::Value root;
 	std::string timestamp;
 	std::string password;
+
+	timestamp = getTime();
+	std::string currentTimeFormatted = getTime3(); 
 
 	d->mPostPersonRecordServerUrl = ReadConfig::GetInstance()->getPost_PersonRecord_Address();
 	d->mPostPersonRecordServerPassword = ReadConfig::GetInstance()->getPost_PersonRecord_Password();
@@ -619,14 +895,13 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 	{
 		return;
 	}
-	//LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
 	QString mMustmode = ReadConfig::GetInstance()->getDoor_MustOpenMode();
 	QString mOptionmode = ReadConfig::GetInstance()->getDoor_OptionalOpenMode();
 
 	//if( (mMustmode == "1" || mOptionmode.contains("1")) )
 	if (t.FaceImgPath=="/mnt/user/face_crop_image")
 	{
-		//LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
+		
 		timestamp = getTime();
 		password = d->mPostPersonRecordServerPassword.toStdString() + timestamp;
 		password = md5sum(password);
@@ -635,16 +910,11 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 		root["msg_type"] = "post_record";
 		root["sn"] = d->mSN.toStdString().c_str();
 		root["timestamp"] = timestamp.c_str();
+		root["time"] = currentTimeFormatted.c_str();
 		root["password"] = password.c_str();
 		root["type"] = std::to_string(t.passType).c_str();
 
 		Json::Value data;
-
-
-		//LogD("%s %s[%d] rid =%s \n", __FILE__, __FUNCTION__, __LINE__, std::to_string(t.rid).c_str());
-
-
-		//data["crop_data"] = fileToBase64String(faceImgPath.toStdString());
 
 
 		data["person_uuid"] = t.face_uuid.toStdString().c_str();
@@ -655,8 +925,11 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 		data["male"] = t.face_sex.toStdString().c_str();
 		data["face_mack"] = std::to_string(t.face_mack).c_str();
 		data["temp_value"] = std::to_string(t.temp_value).c_str();
+		data["time"] = currentTimeFormatted.c_str();
+
 
 		root["data"].append(data);
+
 		QString ret = d->doPostJson(root);
 
 		Json::Reader reader;
@@ -676,11 +949,11 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 	if( access(t.FaceImgPath.toStdString().c_str(), F_OK)) //wipeface //mMustmode.contains("2") &&
 	{
 
-		LogE("%s %s[%d] %s %s not exist , so ignore \n",__FILE__,__FUNCTION__,__LINE__,t.face_name.toStdString().c_str(),t.FaceImgPath.toStdString().c_str());
+		
 		return;
 
 	}
-	//LogD("%s %s[%d] \n", __FILE__, __FUNCTION__, __LINE__);
+	
 	timestamp = getTime();
 	password = d->mPostPersonRecordServerPassword.toStdString() + timestamp;
 	password = md5sum(password);
@@ -690,6 +963,7 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 	root["sn"] = d->mSN.toStdString().c_str();
 	root["timestamp"] = timestamp.c_str();
 	root["password"] = password.c_str();
+	root["time"] = currentTimeFormatted.c_str();
 	root["type"] = std::to_string(t.passType).c_str();
 
 	Json::Value data;
@@ -698,15 +972,20 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 	if(ReadConfig::GetInstance()->getRecords_Manager_FaceImg() == 1)
 	{
 		faceImgPath = t.FaceImgPath;
+		
 	}else if(ReadConfig::GetInstance()->getRecords_Manager_PanoramaImg() == 1)
 	{
 		faceImgPath = t.FaceFullImgPath;
+		
 	}
-	//LogD("%s %s[%d] rid =%s \n", __FILE__, __FUNCTION__, __LINE__, std::to_string(t.rid).c_str());
-	//LogD("%s %s[%d] faceImgPath =%s \n", __FILE__, __FUNCTION__, __LINE__, faceImgPath.toStdString().c_str());
 	if ( !access(faceImgPath.toStdString().c_str(), F_OK)) //mMustmode.contains("2") &&
 	{
-		data["crop_data"] = fileToBase64String(faceImgPath.toStdString());
+       std::string base64Data = fileToBase64String(faceImgPath.toStdString());
+		data["crop_data"] = base64Data;
+		
+		if (base64Data.length() > 50) {
+			
+		}
 	}
 
 	data["person_uuid"] = t.face_uuid.toStdString().c_str();
@@ -717,6 +996,7 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 	data["male"] = t.face_sex.toStdString().c_str();
 	data["face_mack"] = std::to_string(t.face_mack).c_str();
 	data["temp_value"] = std::to_string(t.temp_value).c_str();
+	data["time"] = currentTimeFormatted.c_str();
 
 	root["data"].append(data);
 	QString ret = d->doPostJson(root);
@@ -729,12 +1009,12 @@ void PostPersonRecordThread::slotAppRecordData(const IdentifyFaceRecord_t t)
 		if (reader.parse(ret.toStdString(), result))
 		{
 			msg_type = result["msg_type"].asString();
+			
 		}
 	}
 	if (msg_type == std::string("post_record_done")) {
     bool updateResult = PersonRecordToDB::GetInstance()->UpdatePersonRecordUploadFlag(t.rid, true);
-    LogD("%s %s[%d] Record %ld DB update result: %d\n", 
-         __FILE__, __FUNCTION__, __LINE__, t.rid, updateResult);
+    
     d->picList.append(faceImgPath);
 }
 }

@@ -259,7 +259,9 @@ typedef struct _Person_S
     char szAids[64]; //对应权限，可多个
     char szUUID[128];
     int nPersonType;
-    int nIDMethod; //当前的通行方式，主要用于开门时，判断由不同的通行方式触发不同的提示，例如 nIDMethod=0为刷脸，nIDMethod=1为刷卡
+    int nIDMethod; 
+    char *pFingerprint;        // Pointer to fingerprint template data
+    int nFingerprintSize;  
 } Person_S;
 
 typedef enum _CORE_MESSAGE
@@ -510,21 +512,33 @@ typedef struct _PERMISSION_INFO_S
 
 typedef struct PERSONS_s
 {
-    bool reader;//是否读取
-    int persontype;
-    int personid;
-    QString gids;
-    QString pids;
+    // ALL EXISTING FIELDS (keep these exactly as they are)
+    QByteArray feature;
     QString name;
     QString sex;
     QString idcard;
     QString iccard;
     QString uuid;
-    QString timeOfAccess;
+    int persontype;
+    int personid;
+    QString gids;
+    QString pids;
     QString createtime;
+    QString timeOfAccess;
     QString department;
-    QByteArray feature;
-}PERSONS_t;
+    bool reader;
+    QString strBase64;
+    
+    // ADD THESE FOUR NEW FIELDS TO THE EXISTING STRUCTURE:
+    QString attendanceMode;  // New field for attendance mode (face, card, etc.)
+    QString tenantId;        // New field for tenant ID (multi-tenant support)
+    QString id;              // New field for additional ID 
+    QString status;          // New field for status (active, inactive, etc.)
+    int uploadStatus;
+    QByteArray fingerprint; 
+    int finger_id;
+    int access_level;
+} PERSONS_t;
 
 
 //健康码信息
@@ -574,6 +588,10 @@ typedef struct IdentifyFaceRecord_s
     QString face_aids;//开门方式
     QString process_state;//<1刷卡,2刷脸,3测温,4口罩,5二唯码,6身份证>
     QByteArray face_feature;//特征值
+    QString face_attendanceMode;
+    QString face_tenantId; 
+    QString face_id;
+    QString face_status;
     QString FaceImgPath;
     QString FaceFullImgPath;
     QDateTime createtime;

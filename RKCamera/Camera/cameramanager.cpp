@@ -11,6 +11,11 @@
 
 #include <QThread>
 #include <QSize>
+#include <map>
+
+static int gDebugFrameCount = 0;
+static int gDebugMutexOpCount = 0;
+static double gLastDebugTime = 0;
 
 class CameraManagerPrivate
 {
@@ -18,18 +23,19 @@ class CameraManagerPrivate
 public:
 	CameraManagerPrivate(const QSize &RgaResolution, const bool &RgaMirrored, const qint32 &RgaRotation, const QSize &IrResolution,
 			const bool &IrMirrored, const qint32 &IrRotation, CameraManager *dd);
-private:
 	CameraPreviewYUVCallBack mCameraPreviewYUVCallBack = NULL;
 private:
 	CameraManager * const q_ptr;
 };
-static pthread_t gCameraPreviewYUVCallBackThread = 0;
+char *gRgbBuf0 = Q_NULLPTR;                    // Remove 'static'
+char *gIrBuf0 = Q_NULLPTR;                     // Remove 'static'  
+pthread_t gCameraPreviewYUVCallBackThread = 0; // Remove 'static'
+
 
 static pthread_mutex_t gRgaBufLock;
 static int gRgbFmt = 0;
 static int gRgbWidth = 640;
 static int gRgbHeight = 480;
-static char *gRgbBuf0 = Q_NULLPTR;
 static char *gTakeRgbPhotoYUVBuf = Q_NULLPTR;
 static char *gTakeRgbPhotoBuf = Q_NULLPTR;
 static int gRgbBufSize = 0;
@@ -39,7 +45,6 @@ static pthread_mutex_t gIrBufLock;
 static int gIrFmt = 0;
 static int gIrWidth = 640;
 static int gIrHeight = 480;
-static char *gIrBuf0 = Q_NULLPTR;
 static char *gTakeIrPhotoYUVBuf = Q_NULLPTR;
 static char *gTakeIrPhotoBuf = Q_NULLPTR;
 static int gIrBufSize = 0;
@@ -52,13 +57,60 @@ static double m_dRgbPreviewTime = 0;
 static double m_dIrPreviewTime = 0;
 static int m_nRgbResetCount = 0;
 static int m_nIrResetCount = 0;
+static CameraManager* gCameraManagerInstance = nullptr;
 
-static inline double GetElapsedRealtimeSeconds()
+double GetElapsedRealtimeSeconds()  // Remove 'static inline'
 {
 	int nSocClkTck = 0;
 	struct tms stTims;
 	nSocClkTck = sysconf(_SC_CLK_TCK);
 	return times(&stTims) / (double) nSocClkTck;
+}
+
+
+
+static void logSimpleDebug(const char* message, int value = -1) {
+    static int debugCounter = 0;
+    debugCounter++;
+    
+    // Log every 1000th debug message to avoid spam
+    if (debugCounter % 1000 == 0) {
+        if (value >= 0) {
+            
+        } else {
+            
+        }
+    }
+}
+
+static void logMutexOp(const char* mutexName, const char* operation) {
+    gDebugMutexOpCount++;
+    
+    // Log mutex operations every 500 ops to detect potential deadlocks
+    if (gDebugMutexOpCount % 500 == 0) {
+        
+    }
+}
+
+static void logPeriodicStatus() {
+    double currentTime = GetElapsedRealtimeSeconds();
+    
+    // Log status every 30 seconds
+    if (gLastDebugTime == 0 || (currentTime - gLastDebugTime) > 30.0) {
+        
+        gLastDebugTime = currentTime;
+    }
+}
+
+static void logCriticalCameraError(const char* errorType, const char* details) {
+    static std::map<std::string, int> errorCounts;
+    errorCounts[errorType]++;
+    
+    
+    
+    if (errorCounts[errorType] > 20) {
+        
+    }
 }
 
 static inline void *CameraPreviewYUVCallBackLoop(void *arg)
@@ -69,10 +121,28 @@ static inline void *CameraPreviewYUVCallBackLoop(void *arg)
 	char *pIrBuf = (char*) malloc(gDeskW * gDeskH * 3 / 2);
 	double nowTime = 0;
 	double timeDiff = 3;
+	int loopCounter = 0;
+    int consecutiveErrors = 0;
+
+	
+
+	if (!pRgbBuf || !pIrBuf) {
+        
+        return nullptr;
+    }
 
 	while (true)
 	{
+
+		loopCounter++;
+		gDebugFrameCount++;
 		nowTime = GetElapsedRealtimeSeconds();
+        logPeriodicStatus();
+		
+        // DEBUG: Log loop health every 1000 iterations
+        if (loopCounter % 1000 == 0) {
+        }
+
 #if 0
 		bool bRebootFlag = 0;
 		if(m_dRgbPreviewTime != 0 && m_dIrPreviewTime != 0)
@@ -102,24 +172,99 @@ static inline void *CameraPreviewYUVCallBackLoop(void *arg)
 
 		if (g_bIsAiProcessable == false)
 		{
+			 // Log AI process state periodically
+            if (loopCounter % 100 == 0) {
+                
+            }
 			sleep(1);
 			continue;
 		}
+		consecutiveErrors = 0;
 
+        logMutexOp("gRgaBufLock", "LOCK_ATTEMPT");
 		pthread_mutex_lock(&gRgaBufLock);
+		logMutexOp("gRgaBufLock", "LOCKED");
+		//Validate RGB buffer
+        if (gRgbBuf0 == nullptr) {
+            logCriticalCameraError("NULL_RGB_BUFFER", "RGB buffer is null in loop");
+            pthread_mutex_unlock(&gRgaBufLock);
+            consecutiveErrors++;
+            if (consecutiveErrors > 10) {
+                LogD("[CAMERA_CRITICAL] Too many consecutive RGB buffer errors, sleeping...");
+                sleep(1);
+            }
+            continue;
+        }
+        
+        if (gRgbBufSize <= 0) {
+            logCriticalCameraError("INVALID_RGB_SIZE", "RGB buffer size invalid in loop");
+            pthread_mutex_unlock(&gRgaBufLock);
+            consecutiveErrors++;
+            continue;
+        }
 		memcpy(pRgbBuf, gRgbBuf0, gRgbBufSize);
 		pthread_mutex_unlock(&gRgaBufLock);
-
+		logMutexOp("gRgaBufLock", "UNLOCKED");
+		
+        logMutexOp("gIrBufLock", "LOCK_ATTEMPT");
 		pthread_mutex_lock(&gIrBufLock);
+		logMutexOp("gIrBufLock", "LOCKED");
+        // Validate IR buffer
+        if (gIrBuf0 == nullptr) {
+            logCriticalCameraError("NULL_IR_BUFFER", "IR buffer is null in loop");
+            pthread_mutex_unlock(&gIrBufLock);
+            consecutiveErrors++;
+            if (consecutiveErrors > 10) {
+              
+                sleep(1);
+            }
+            continue;
+        }
+        
+        if (gIrBufSize <= 0) {
+            logCriticalCameraError("INVALID_IR_SIZE", "IR buffer size invalid in loop");
+            pthread_mutex_unlock(&gIrBufLock);
+            consecutiveErrors++;
+            continue;
+        }
+
 		memcpy(pIrBuf, gIrBuf0, gIrBufSize);
 		pthread_mutex_unlock(&gIrBufLock);
+		logMutexOp("gIrBufLock", "UNLOCKED");
 
-		if (pRgbBuf != Q_NULLPTR && pIrBuf != Q_NULLPTR && gIrBufSize && gRgbBufSize)
-		{
-			obj->setCameraPreviewYUVDataCall(gRgbFmt, (unsigned long) pRgbBuf, 0.0, gRgbWidth, gRgbHeight, gRgbBufSize, gRgbRotation,
-					(unsigned long) pIrBuf, 0.0, gIrWidth, gIrHeight, gIrBufSize, gIrRotation);
-		}
-	}
+		 // Validate final buffers before callback
+        if (pRgbBuf != Q_NULLPTR && pIrBuf != Q_NULLPTR && gIrBufSize && gRgbBufSize)
+        {
+            // Log callback invocation periodically
+            if (loopCounter % 30 == 0) {
+                
+            }
+            
+            // Call the face detection callback
+            obj->setCameraPreviewYUVDataCall(gRgbFmt, (unsigned long) pRgbBuf, 0.0, 
+                                            gRgbWidth, gRgbHeight, gRgbBufSize, gRgbRotation,
+                                            (unsigned long) pIrBuf, 0.0, 
+                                            gIrWidth, gIrHeight, gIrBufSize, gIrRotation);
+        } else {
+            logCriticalCameraError("INVALID_CALLBACK_PARAMS", "Invalid buffer pointers for callback");
+            consecutiveErrors++;
+            
+            // Log detailed error info
+            LogD("[CAMERA_ERROR] Buffer validation failed: pRgbBuf=%p, pIrBuf=%p, gIrBufSize=%d, gRgbBufSize=%d", 
+                 pRgbBuf, pIrBuf, gIrBufSize, gRgbBufSize);
+        }
+        
+        // Add small delay to prevent tight loop in case of errors
+        if (consecutiveErrors > 5) {
+            usleep(10000); // 10ms delay
+        }
+    }
+    
+    // Cleanup (though this code is never reached in current implementation)
+    if (pRgbBuf) free(pRgbBuf);
+    if (pIrBuf) free(pIrBuf);
+    
+    return nullptr;
 }
 
 static void onRgbPreview(void *ptr, int fd, int fmt, int w, int h, int rotation)
@@ -163,6 +308,10 @@ static void onRgbPreview(void *ptr, int fd, int fmt, int w, int h, int rotation)
 		memcpy(gRgbBuf0, ptr, gRgbBufSize);
 	}
 	pthread_mutex_unlock(&gRgaBufLock);
+
+
+	if (::g_bIsAiProcessable) {
+	}
 }
 
 static void onIrPreview(void *ptr, int fd, int fmt, int w, int h, int rotation)
@@ -170,7 +319,6 @@ static void onIrPreview(void *ptr, int fd, int fmt, int w, int h, int rotation)
 	(void) fd;
 	m_dIrPreviewTime =  GetElapsedRealtimeSeconds();
 	m_nIrResetCount = 0;
-	// printf("%s %s[%d] ir %d \n", __FILE__, __FUNCTION__, __LINE__, fd);
 	pthread_mutex_lock(&gIrBufLock);
 	if (ptr == Q_NULLPTR || w <= 0 || h <= 0)
 	{
@@ -307,18 +455,46 @@ void CameraManager::setCameraPreviewYUVDataCall(int nPixelFormat, unsigned long 
 		int nHeight0, int nSize0, int rotation0, unsigned long nYuvVirAddr1, unsigned long nYuvPhyAddr1, int nWidth1, int nHeight1,
 		int nSize1, int rotation1)
 {
+
+
 	Q_D (CameraManager);
+
+	static int callbackCounter = 0;
+callbackCounter++;
+if (callbackCounter % 30 == 0) {
+}
 	if (d->mCameraPreviewYUVCallBack)
 		d->mCameraPreviewYUVCallBack(nPixelFormat, nYuvVirAddr0, nYuvPhyAddr0, nWidth0, nHeight0, nSize0, rotation0, nYuvVirAddr1,
 				nYuvPhyAddr1, nWidth1, nHeight1, nSize1, rotation1);
 }
 
-void CameraManager::setCameraPreviewYUVCallBack(CameraPreviewYUVCallBack call)
-{
-	Q_D (CameraManager);
-	d->mCameraPreviewYUVCallBack = call;
+CameraManager* CameraManager::getInstance() {
+    if (!gCameraManagerInstance) {
+        // Use appropriate constructor parameters for your platform:
+        QSize rgaSize(640, 480);
+        QSize irSize(640, 480);
+        int rotationRgb = 0;
+        int rotationIr = 0;
+        int deskW = 800;
+        int deskH = 1280;
+        gCameraManagerInstance = new CameraManager(rgaSize, false, rotationRgb, irSize, false, rotationIr, deskW, deskH, nullptr);
+    }
+    return gCameraManagerInstance;
 }
 
+
+void CameraManager::setCameraPreviewYUVCallBack(CameraPreviewYUVCallBack call)
+{
+    Q_D(CameraManager);
+    
+    d->mCameraPreviewYUVCallBack = call;
+    
+    if (d->mCameraPreviewYUVCallBack) {
+        
+    } else {
+        
+    }
+}
 void CameraManager::slotDisMissMessage()
 {
 	MRECT stMRect = { 0 };
@@ -349,10 +525,16 @@ void CameraManager::slotDrawFaceRect(const QList<CORE_FACE_RECT_S> list)
 
 void CameraManager::startAiProcess()
 {
-	if (gCameraPreviewYUVCallBackThread == 0)
-	{
-		pthread_create(&gCameraPreviewYUVCallBackThread, Q_NULLPTR, CameraPreviewYUVCallBackLoop, this);
-	}
+    
+    if (gCameraPreviewYUVCallBackThread == 0)
+    {
+        pthread_create(&gCameraPreviewYUVCallBackThread, Q_NULLPTR, CameraPreviewYUVCallBackLoop, this);
+        
+    }
+    else
+    {
+        
+    }
 }
 
 void CameraManager::stopAiProcess()
@@ -432,10 +614,10 @@ bool CameraManager::takePhotos(char **ppDstRgbData, int *pDstRgbSize, char **ppD
 		char *pIrRotationBuf = ISC_NULL;
 		int nRgbCameraRotation = 0;
 		int nIrCameraRotation = 0;
-#define HAL_TRANSFORM_ROT_90     0x04
-#define HAL_TRANSFORM_ROT_270    0x07
-#define HAL_TRANSFORM_ROT_0    0x02
-#define HAL_TRANSFORM_ROT_180    0x03
+        #define HAL_TRANSFORM_ROT_90     0x04
+        #define HAL_TRANSFORM_ROT_270    0x07
+        #define HAL_TRANSFORM_ROT_0    0x02
+        #define HAL_TRANSFORM_ROT_180    0x03
 
 		pRGBRotationBuf = (char*) malloc(gDeskW * gDeskH * 3 / 2);
 		if (pRGBRotationBuf == ISC_NULL)
@@ -447,7 +629,7 @@ bool CameraManager::takePhotos(char **ppDstRgbData, int *pDstRgbSize, char **ppD
 
 		nRgbCameraRotation = ReadConfig::GetInstance()->getRgbCameraRotation();
 		nIrCameraRotation = ReadConfig::GetInstance()->getIrCameraRotation();
-        printf(">>>%s,%s,%d,nRgbCameraRotation=%d\n",__FILE__,__func__,__LINE__,nRgbCameraRotation);
+       
 		if(nRgbCameraRotation == 270)
 		{
 			nRgbCameraRotation = HAL_TRANSFORM_ROT_270;

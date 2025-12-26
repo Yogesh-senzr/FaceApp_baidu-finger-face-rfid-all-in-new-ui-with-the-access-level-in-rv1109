@@ -35,7 +35,6 @@ private:
     void saveFaceFullImgToDisk(const QString &, const CORE_FACE_S &);
     bool appRecordData(const QString &name, const QString &sex, const QString &idcard, const QString &iccard, const QString &uuid, const int &persontype, const int &personid, const QString &gids, const QString &pids, const QString &time, const QString &img_path, const float &tempvalue, const int &face_mask);
 private:
-    /*保存实别记录：全景图、人脸图、陌生人*/
     bool mRecordsPanoramaImg;
     bool mRecordsFaceImg;
     bool mRecordsStranger;
@@ -183,6 +182,8 @@ static inline int getidentifyrecordMaxRid()
     return 0;
 }
 
+// In PersonRecordToDB.cpp - Modified slotappRecordData function
+
 void PersonRecordToDB::slotappRecordData(const IdentifyFaceRecord_t t)
 {
     Q_D(PersonRecordToDB);
@@ -190,26 +191,25 @@ void PersonRecordToDB::slotappRecordData(const IdentifyFaceRecord_t t)
     QString FaceImgPath;
     if(d->mRecordsPanoramaImg)d->saveFaceFullImgToDisk(t.FaceFullImgPath, t.face);
     if(d->mRecordsFaceImg)
-	{
-    	if(t.face.catch_face_quality > 0 && !access(t.face.FaceImgPath,F_OK))
-    	{
-    		FaceImgPath = QString::fromUtf8(t.face.FaceImgPath, strlen(t.face.FaceImgPath));
-    	}else
-    	{
-    		FaceImgPath = t.FaceImgPath;
-    		d->saveFaceImgToDisk(t.FaceImgPath, t.face);
-    	}
-    	LogD("%s %s[%d] FaceImgPath %s \n",__FILE__,__FUNCTION__,__LINE__,FaceImgPath.toStdString().c_str());
-	}
-
-	//局域网服务接收识别记录
-	LocalService::GetInstance()->appRecordData(t);
-	PostPersonRecordThread::GetInstance()->appRecordData(t);
+    {
+        if(t.face.catch_face_quality > 0 && !access(t.face.FaceImgPath,F_OK))
+        {
+            FaceImgPath = QString::fromUtf8(t.face.FaceImgPath, strlen(t.face.FaceImgPath));
+        }else
+        {
+            FaceImgPath = t.FaceImgPath;
+            d->saveFaceImgToDisk(t.FaceImgPath, t.face);
+        }
+        LogD("%s %s[%d] FaceImgPath %s \n",__FILE__,__FUNCTION__,__LINE__,FaceImgPath.toStdString().c_str());
+    }
 
     if((t.FaceType == STRANGER) || (t.FaceType == 0))
-    {//陌生人
+    {
+        LocalService::GetInstance()->appRecordData(t);
+        // REMOVED: PostPersonRecordThread::GetInstance()->appRecordData(t); // Don't post stranger records
+        
         if(d->mRecordsStranger)
-        {//保存记
+        {// (Save records to local database only)
             if(d->mRecordsPanoramaImg)
             {
                 qDebug()<<"陌生人保存全景图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, t.FaceFullImgPath, t.temp_value, t.face.attr_info.face_mask);
@@ -219,31 +219,18 @@ void PersonRecordToDB::slotappRecordData(const IdentifyFaceRecord_t t)
                 qDebug()<<"陌生人保存人脸图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, FaceImgPath, t.temp_value, t.face.attr_info.face_mask);
             }
         } 
-#if 0        
-        else  //粤康码
-        {            
-            if (!t.face_name.isEmpty() && ! t.face_idcardnum.isEmpty())
-            {
-                if(d->mRecordsPanoramaImg)
-                {
-                    qDebug()<<"健康码.全景图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, t.FaceFullImgPath, t.temp_value, t.face.attr_info.face_mask);
-                }
-                if(d->mRecordsFaceImg)
-                {
-                    qDebug()<<"健康码"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, FaceImgPath, t.temp_value, t.face.attr_info.face_mask);
-                }
-
-            }
-        }
-#endif         
     }else
-    {//非陌生人
+    {//非陌生人 (Face recognized records)
+        // Post both to local service AND server for face recognized records
+        //局域网服务接收识别记录
+        LocalService::GetInstance()->appRecordData(t);
+        PostPersonRecordThread::GetInstance()->appRecordData(t); // POST TO SERVER for recognized faces only
+        
         QString  mustMode = ReadConfig::GetInstance()->getDoor_MustOpenMode();
-	    QString mOptionmode = ReadConfig::GetInstance()->getDoor_OptionalOpenMode();        
-	    //if( !(mustMode.contains("2") || mOptionmode.contains("2"))) //Face wipe 
+        QString mOptionmode = ReadConfig::GetInstance()->getDoor_OptionalOpenMode();        
+        
         if (( mustMode=="1" || mOptionmode.contains("1") ) && t.process_state.contains("1")) //ICCard
         {
-            //t.FaceImgPath="/mnt/user/face_crop_image"; 
             qDebug()<<"非陌生人不刷脸保存人脸图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, "/mnt/user/face_crop_image", t.temp_value, t.face.attr_info.face_mask);
         }
         else if(d->mRecordsPanoramaImg)
@@ -252,9 +239,8 @@ void PersonRecordToDB::slotappRecordData(const IdentifyFaceRecord_t t)
         } else if(d->mRecordsFaceImg)
         {
             qDebug()<<"非陌生人保存人脸图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, FaceImgPath, t.temp_value, t.face.attr_info.face_mask);
-        } else if(!d->mRecordsPanoramaImg && !d->mRecordsFaceImg)//因为前面没有执行保记录所以要增加多一条没有图片的记录
+        } else if(!d->mRecordsPanoramaImg && !d->mRecordsFaceImg)
         {
-            //t.FaceImgPath="/mnt/user/face_crop_image"; 
             qDebug()<<"非陌生人不保存人脸图"<<d->appRecordData(t.face_name, t.face_sex, t.face_idcardnum, t.face_iccardnum, t.face_uuid, t.face_persontype, t.face_personid, t.face_gids, t.face_aids, DateTime, "/mnt/user/face_crop_image", t.temp_value, t.face.attr_info.face_mask);
         }
     }

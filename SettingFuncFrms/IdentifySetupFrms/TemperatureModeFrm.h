@@ -3,7 +3,7 @@
 
 #include <QDialog>
 
-//测温环境
+
 class TemperatureModeFrmPrivate;
 class TemperatureModeFrm : public QDialog
 {
@@ -11,7 +11,7 @@ class TemperatureModeFrm : public QDialog
 public:
     explicit TemperatureModeFrm(QWidget *parent = nullptr);
     ~TemperatureModeFrm();
-public://设置选中测温环境
+public:
     void setTemperatureMode(const int &);
     int getTemperatureMode()const;
 private:

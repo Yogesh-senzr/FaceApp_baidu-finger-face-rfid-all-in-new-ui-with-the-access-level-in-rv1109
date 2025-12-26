@@ -120,6 +120,8 @@ SOURCES += \
     SettingFuncFrms/SysSetupFrms/StorageCapacityFrm.cpp \
     SettingFuncFrms/SysSetupFrms/TimesetFrm.cpp \
     SettingFuncFrms/SysSetupFrms/LogPasswordChangeFrm.cpp \
+    SettingFuncFrms/SysSetupFrms/DeleteAllFingerprintsFrm.cpp \
+    SettingFuncFrms/SysSetupFrms/CompareFingerFrm.cpp \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/PassageTimeFrm.cpp \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/AccessTypeFrm.cpp \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/WigginsOutputFrm.cpp \
@@ -136,6 +138,7 @@ SOURCES += \
     SettingFuncFrms/SysSetupFrms/QRCodeFrm.cpp \
     SettingFuncFrms/SysSetupFrms/QRCodeGenerator.cpp \
     SettingFuncFrms/SysSetupFrms/SyncFunctionality.cpp \
+    SettingFuncFrms/SysSetupFrms/FingerDebugFrm.cpp \
     FaceHomeFrms/FaceHomeTitleFrm.cpp \
     FaceHomeFrms/FaceHomeBottomFrm.cpp \
     ManageEngines/IdentityManagement.cpp \
@@ -221,6 +224,8 @@ HEADERS += \
     SettingFuncFrms/SysSetupFrms/StorageCapacityFrm.h \
     SettingFuncFrms/SysSetupFrms/TimesetFrm.h \
     SettingFuncFrms/SysSetupFrms/LogPasswordChangeFrm.h \
+    SettingFuncFrms/SysSetupFrms/DeleteAllFingerprintsFrm.h \
+    SettingFuncFrms/SysSetupFrms/CompareFingerFrm.h \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/PassageTimeFrm.h \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/AccessTypeFrm.h \
     SettingFuncFrms/SysSetupFrms/DoorControFrms/WigginsOutputFrm.h \
@@ -237,6 +242,7 @@ HEADERS += \
     SettingFuncFrms/SysSetupFrms/QRCodeFrm.h \
     SettingFuncFrms/SysSetupFrms/QRCodeGenerator.h \
     SettingFuncFrms/SysSetupFrms/SyncFunctionality.h \
+    SettingFuncFrms/SysSetupFrms/FingerDebugFrm.h \
     FaceHomeFrms/FaceHomeTitleFrm.h \
     FaceHomeFrms/FaceHomeBottomFrm.h \
     SharedInclude/CallBindDef.h \
@@ -309,4 +315,9 @@ FORMS += \
 
 INCLUDEPATH += /home/mathan/maaaatttttu/rv1126_rv1109_linux_sdk_release_20240831/buildroot/output/rockchip_rv1126_rv1109_facial_gate/host/arm-buildroot-linux-gnueabihf/sysroot/usr/include
 LIBS += -L/home/mathan/maaaatttttu/rv1126_rv1109_linux_sdk_release_20240831/buildroot/output/rockchip_rv1126_rv1109_facial_gate/host/arm-buildroot-linux-gnueabihf/sysroot/usr/lib -lqrencode
+
+
+INCLUDEPATH += ./include
+LIBS +=-L../lib -lbdca_static -lcryptoauth
+LIBS += -L./lib -lfaceid -lmot_sort -lpthread
 

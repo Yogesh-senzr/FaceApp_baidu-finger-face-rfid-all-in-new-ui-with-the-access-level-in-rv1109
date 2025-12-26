@@ -3,7 +3,6 @@
 
 #include <QDialog>
 
-//切换网络时，弹出此对话框，提示用户是否现在重启
 class ConfirmRestartFrmPrivate;
 class ConfirmRestartFrm : public QDialog
 {

@@ -18,7 +18,7 @@ class FaceDataResolverObjPrivate
 public:
     FaceDataResolverObjPrivate(FaceDataResolverObj *dd);
 private:
-    int CheckIsIdentifyFace(QString &name, QString &sex, QString &idcard, QString &iccard, QString &uuid, int &persontype, int &personid, QString &gids, QString &pids);//识别人脸
+   int CheckIsIdentifyFace(QString &name, QString &sex, QString &idcard, QString &iccard, QString &uuid, int &persontype, int &personid, QString &gids, QString &pids, QString &serverID);
 private:
     mutable QMutex sync;
     QWaitCondition pauseCond;
@@ -96,11 +96,13 @@ void FaceDataResolverObj::EchoFaceRecognition(FF_CALLBACK(void(const int &id, co
     d->_FaceRecognitionCallBack = call;
 }
 
-int FaceDataResolverObjPrivate::CheckIsIdentifyFace(QString &name, QString &sex, QString &idcard, QString &iccard, QString &uuid, int &persontype, int &personid, QString &gids, QString &pids)
+int FaceDataResolverObjPrivate::CheckIsIdentifyFace(QString &name, QString &sex, QString &idcard, QString &iccard, QString &uuid, int &persontype, int &personid, QString &gids, QString &pids, QString &serverID)
 {//查询数据注册人员(如果扛不住2W的人员不停查询就改用内存查询)
     //return RegisteredFacesDB::GetInstance()->ComparisonPersonFaceFeature(name, sex, idcard, iccard, uuid, persontype, personid, gids, pids, QByteArray().append((char *)this->mFaceTask.pFaceFeature, this->mFaceTask.nFaceFeatureSize)) ? NOT_STRANGER : STRANGER;
 
-    return RegisteredFacesDB::GetInstance()->ComparisonPersonFaceFeature_baidu(name, sex, idcard, iccard, uuid, persontype, personid, gids, pids, (unsigned char *)this->mFaceTask.pFaceFeature, this->mFaceTask.nFaceFeatureSize) ? NOT_STRANGER : STRANGER;
+    return RegisteredFacesDB::GetInstance()->ComparisonPersonFaceFeature_baidu(
+        name, sex, idcard, iccard, uuid, persontype, personid, gids, pids, serverID,
+        (unsigned char *)this->mFaceTask.pFaceFeature, this->mFaceTask.nFaceFeatureSize) ? NOT_STRANGER : STRANGER;
 }
 
 void FaceDataResolverObj::run()
@@ -110,11 +112,11 @@ void FaceDataResolverObj::run()
     {
         d->sync.lock();
         if (d->is_pause)d->pauseCond.wait(&d->sync);
-        QString name, sex, idcard, iccard, uuid, gids, pids;
+        QString name, sex, idcard, iccard, uuid, gids, pids, serverID;
         int persontype = 0;
         int personid = 0;
     
-        int FaceType = d->CheckIsIdentifyFace(name, sex, idcard, iccard, uuid, persontype, personid, gids, pids);
+        int FaceType = d->CheckIsIdentifyFace(name, sex, idcard, iccard, uuid, persontype, personid, gids, pids, serverID);
         d->is_pause = true;
         d->sync.unlock();
     

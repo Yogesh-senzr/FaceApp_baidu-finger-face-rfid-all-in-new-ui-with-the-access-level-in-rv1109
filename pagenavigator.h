@@ -2,43 +2,63 @@
 #define PAGENAVIGATOR_H
 
 #include <QWidget>
-#include <QList>
+#include <QPushButton>
 #include <QLabel>
-
-namespace Ui
-{
-    class PageNavigator;
-}
+#include <QHBoxLayout>
+#include <QPropertyAnimation>
 
 class PageNavigator : public QWidget
 {
-	Q_OBJECT
-public:
-	explicit PageNavigator(int blockSize = 3, QWidget *parent = nullptr);
-	~PageNavigator();
-public:
-	inline int getBlockSize() const { return m_blockSize; }
-	inline int getMaxPage() const{ return m_maxPage; }
-	inline int getCurrentPage() const { return m_currentPage; }
+    Q_OBJECT
 
-    // 其他组件只需要调用这两个函数即可
-    void setMaxPage(int page);   // 当总页数改变时调用
-    void setCurrentPage(int page, bool signalEmitted = false); // 修改当前页时调用
-private:
-	void setBlockSize(int blockSize);
-	void updatePageLabels();
-	void initialize();
-protected:
-    virtual bool eventFilter(QObject *watched, QEvent *e);
+public:
+    explicit PageNavigator(int blockSize = 7, QWidget *parent = nullptr);
+    ~PageNavigator();
+
+    int getCurrentPage() const { return m_currentPage; }
+    int getMaxPage() const { return m_maxPage; }
+
+public slots:
+    void setMaxPage(int page);
+    void setCurrentPage(int page, bool signalEmitted = true);
+    void setBlockSize(int blockSize);
+
 signals:
-    void currentPageChanged(const int page);
+    void currentPageChanged(int page);
+
+private slots:
+    void onPageButtonClicked();
+    void onPrevButtonClicked();
+    void onNextButtonClicked();
+    void onFirstButtonClicked();
+    void onLastButtonClicked();
+
 private:
-    Ui::PageNavigator *ui;
+    void setupUI();
+    void applyModernStyles();
+    void updatePageButtons();
+    QPushButton* createNavButton(const QString &text, const QString &tooltip);
+    QPushButton* createPageButton(int pageNumber);
+    void animateButtonClick(QPushButton *button);
+
 private:
-    int m_blockSize;
-    int m_maxPage;
+    QHBoxLayout *m_mainLayout;
+    QWidget *m_buttonContainer;
+    QHBoxLayout *m_buttonLayout;
+    
+    QPushButton *m_firstButton;
+    QPushButton *m_prevButton;
+    QPushButton *m_nextButton;
+    QPushButton *m_lastButton;
+    
+    QList<QPushButton*> m_pageButtons;
+    QPushButton *m_currentPageButton;
+    
     int m_currentPage;
-    QList<QLabel *> *m_pageLabels;
+    int m_maxPage;
+    int m_blockSize;
+    
+    QPropertyAnimation *m_clickAnimation;
 };
 
 #endif // PAGENAVIGATOR_H

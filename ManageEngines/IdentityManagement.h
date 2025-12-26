@@ -3,8 +3,27 @@
 
 #include <QThread>
 #include "SharedInclude/GlobalDef.h"
-//公版平台
-//识别管理(主要用于处理识别到人脸数据， 进行检测人脸、通行、上传、服务器， 等等交互信息)
+
+class IdentityManagementPrivate;
+
+class OptimizedDisplayHelper {
+public:
+    static QString createVerifiedDisplay(const QString &name, const QString &idCard) {
+        const int totalSize = 26 + name.length() + idCard.length();
+        
+        QString result;
+        result.reserve(totalSize);
+        
+        result += "Name: ";      // 6 chars
+        result += name;          
+        result += "\nEMP ID: "; // 9 chars 
+        result += idCard;        
+        result += "\nVerified";  // 9 chars
+        
+        return result;
+    }
+};
+
 class IdentityManagementPrivate;
 class IdentityManagement : public QThread
 {
@@ -26,6 +45,7 @@ public:
 public://开门方式
     void setDoor_MustOpenMode(const QString &);//必须项
     void setDoor_OptionalOpenMode(const QString &);//可选项
+    void setDeviceAccessLevel(const QString& level);
 public:
     //当前识别到人脸
     Q_SLOT virtual void slotMatchCoreFace(const CORE_FACE_S);
@@ -33,6 +53,10 @@ public:
     Q_SLOT virtual void slotDisMissMessage(const bool state);//当前无人脸
     //ic卡模块
     Q_SLOT virtual void slotReadIccardNum(const QString iccard);
+    Q_SLOT virtual void slotFingerprintMatched(const QString &personId, 
+                               const QString &name, 
+                               const int &confidence);
+    Q_SLOT virtual void slotFingerprintNotRecognized(); 
     //平台健康码
     Q_SLOT virtual void slotHealthCodeInfo(const int type, const QString name, const QString idCard, const int qrCodeType, const double warningTemp, const QString msg); 
     //Q_SLOT virtual void slotLRHealthCodeInfo(const int type, const QString name, const QString idCard, const int qrCodeType, const double warningTemp, const QString Msg );    
@@ -60,19 +84,40 @@ public:
     /*显示人脸相关参数*/
     Q_SIGNAL void sigShowAlgoStateAboutFace(const QString);
     /*显示口罩信息*/
-    Q_SIGNAL void sigMaskFaceMessage(const QString);    
+    Q_SIGNAL void sigMaskFaceMessage(const QString);   
+    
+    Q_SIGNAL void sigShowPersonImage(const QString &imagePath, const QString &personName);
+    Q_SIGNAL void sigClearPersonImage();
+    Q_SIGNAL void sigRecognizedPerson(const QString &name, const int &personId, 
+                           const QString &uuid, const QString &idcard);
 private:
     //人脸识完成时回调通知（任务号、是否陌生人、uuid）
-    void EchoFaceRecognition(const int &id, const int &FaceType, const int &face_personid, const int &face_persontype,
-                             const QString &face_name, const QString &face_sex, const QString &face_uuid, const QString &face_idcardnum,
-                             const QString &face_iccardnum, const QString &face_gids, const QString &face_aids, const QByteArray &face_feature);
+    void EchoFaceRecognition(const int &id, const int &FaceType, 
+                           const int &face_personid, const int &face_persontype, 
+                           const QString &face_name, const QString &face_sex, 
+                           const QString &face_uuid, const QString &face_idcardnum, 
+                           const QString &face_iccardnum, const QString &face_gids, 
+                           const QString &face_aids, const QByteArray &face_feature);
+    void EchoFingerprintRecognition(
+    const int &face_personid,
+    const int &FaceType, 
+    const QString &face_name,
+    const QString &face_uuid,
+    const QString &face_idcardnum,
+    const QString &face_sex,
+    const int &face_persontype);
+    bool CheckAccessLevelFromDB(int userAccessLevel);
 private:
     void run();
+    QString m_deviceAccessLevel;
 protected:
     QScopedPointer<IdentityManagementPrivate>d_ptr;
 private:
     Q_DECLARE_PRIVATE(IdentityManagement)
     Q_DISABLE_COPY(IdentityManagement)
+
+public:
+    void clearThenSetBottomMessage(const QString &message);
 };
 
 #endif // IDENTITYMANAGEMENT_H

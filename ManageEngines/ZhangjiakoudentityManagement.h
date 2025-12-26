@@ -2,7 +2,7 @@
 #define ZhangjiakoudentityManagement_H
 
 #include "IdentityManagement.h"
-//浩宇平台
+
 class ZhangjiakoudentityManagementPrivate;
 class ZhangjiakoudentityManagement : public IdentityManagement
 {

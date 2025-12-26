@@ -13,6 +13,10 @@ public:
 public:
     void setTitleText(const QString &text);
     void setLinkState(const bool &, const int &type);
+       // Add this new method for server time updates
+    void setServerTime(const QDateTime &serverTime);
+    void setSubtitleText(const QString &text);
+void setSystemStatus(const QString &status, bool isOnline = true);
 private:
     void paintEvent(QPaintEvent *event);
 private:

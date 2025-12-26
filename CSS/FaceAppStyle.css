@@ -66,8 +66,6 @@ QListWidget::item:hover
 {
     color:rgb(235,235,239);
 }
-/*自定义例表内容窗口高度，固定*/
-/*QWidget#CItemWidget{}*/
 /*QLabel样式*/
 QLabel
 {
@@ -89,7 +87,6 @@ QLabel#BottomMessageHintLabel_3
 {
     font-size:48px;
     color: white;
-    /*font-weight: bold;*/
 }
 /*==========选择按钮==============*/
 QCheckBox{outline:0px;font-size:26px;}
@@ -196,7 +193,7 @@ QRadioButton#choiceRadioButton::indicator::checked{image: url(:/Images/choiceRad
 
 /**/
 QTimeEdit{font-size:22px;}
-/*自定义弹出对话框样式表 宽度和高度由代写固定在650 *230*/
+/*自定义弹出对话框样式表 宽度和高度由代码固定在650 *230*/
 QDialog#OperationTipsFrm
 {
     background-color:rgb(231, 231, 231);
@@ -361,12 +358,6 @@ QPushButton#UsedSpaceButton
     max-width:32px;
 }
 /*主页时钟显示*/
-/**
-QWidget#FaceHomeTitleFrm
-{
-    background-color:rgba(0, 0, 0, 100);
-}
-**/
 QLabel#ClockLabel
 {
     border:0px;
@@ -479,8 +470,6 @@ QHeaderView::section
 QTableWidget::item{border-bottom:1px solid #EEF1F7;}
 QTableWidget::item::selected{color:red;background:#EFF4FF;}
 
-
-
 /*健康码界面主标题*/
 QLabel#LRHealthCodeFrmTitle
 {
@@ -553,7 +542,340 @@ QLabel#CenterHomeIcon
     padding: 10px;
 }
 
-
 QPushButton#CenterHomeIcon:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+/* ========== OPTIMIZED STYLES - CONSOLIDATED ========== */
+
+/* GLOBAL PAGE BACKGROUND - Replaces 11 individual MainWidget IDs */
+QWidget[pageBackground="true"]
+{
+    background: rgb(248,249,250);
+}
+
+/* GLOBAL HEADER FRAME - Replaces 11 individual HeaderFrame IDs */
+QFrame[headerFrame="true"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 0px;
+    padding: 0px;
+}
+
+/* HEADER TITLE - Replaces 11 individual HeaderTitle IDs */
+QLabel[headerTitle="true"]
+{
+    font-size: 22px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    margin-left: 12px;
+}
+
+/* SCROLL AREA - Replaces 11 individual ScrollArea IDs */
+QScrollArea[contentScroll="true"]
+{
+    background: transparent;
+    border: none;
+}
+
+/* CONTENT WIDGET - Replaces 11 individual ContentWidget IDs */
+QWidget[contentWidget="true"]
+{
+    background: transparent;
+}
+
+/* CARD WIDGET - Replaces 11 individual CardWidget IDs */
+QFrame[cardWidget="true"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* CARD HOVER STATE */
+QFrame[cardWidget="true"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid rgb(33,150,243);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* ICON FRAME BASE - Default style for all icon frames */
+QFrame[iconFrame="true"]
+{
+    border-radius: 12px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+}
+
+/* ICON FRAME COLORS - Use iconColor property set from C++ */
+QFrame#NetworkSetupHeaderIcon,QFrame#EthernetViewHeaderIcon,QFrame#EthernetIconFrame,QFrame#BiometricIconFrame,QFrame#ViewRecordsIconFrame,QFrame#MainServerIconFrame,QFrame#IPModeIconFrame,QFrame#Status4GIconFrame { background: rgb(33,150,243); }
+QFrame#IdentifySetupHeaderIcon,QFrame#Network4GViewHeaderIcon,QFrame#Mobile4GIconFrame,QFrame#PersonRecordIconFrame { background: rgb(156,39,176); }
+QFrame#RecordsManagementHeaderIcon { background: rgb(103,58,183); }
+QFrame#SysSetupHeaderIcon { background: rgb(96,125,139); }
+QFrame#AboutMachineHeaderIcon { background: rgb(158,158,158); }
+QFrame#PeopleManagementHeaderIcon,QFrame#AddPersonIconFrame,QFrame#SettingsIconFrame,QFrame#EthernetSwitchIconFrame,QFrame#Info4GIconFrame,QFrame#WifiSignalStrongFrame { background: rgb(139,195,74); }
+QFrame#HomeMenuHeaderIcon,QFrame#NetworkSetupIconFrame { background: rgb(67,160,71); }
+QFrame#SrvSetupHeaderIcon,QFrame#HostSetupIconFrame,QFrame#SettingRecordsIconFrame,QFrame#NetworkConfigIconFrame,QFrame#SyncIconFrame { background: rgb(255,152,0); }
+QFrame#WifiViewHeaderIcon { background: rgb(76,175,80); }
+QFrame#IdentifySetupIconFrame,QFrame#ThresholdIconFrame,QFrame#DetailIconFrame,QFrame#SaveIconFrame,QFrame#WifiSignalVeryWeakFrame { background: rgb(244,67,54); }
+QFrame#ImportPersonIconFrame { background: rgb(3,169,244); }
+QFrame#QueryPersonIconFrame { background: rgb(121,158,73); }
+QFrame#RegistrationIconFrame { background: rgb(46,204,113); }
+QFrame#WifiSignalMediumFrame { background: rgb(255,193,7); }
+QFrame#WifiSignalWeakFrame { background: rgb(255,152,0); }
+QFrame#LanguageIconFrame,QFrame#DisplayIconFrame,QFrame#InfoIconFrame,QFrame#SecurityIconFrame,QFrame#NetworkIconFrame,QFrame#DefaultIconFrame,QFrame#DefaultRecordsIconFrame,QFrame#DefaultSystemIconFrame,QFrame#DefaultAboutIconFrame,QFrame#DefaultPeopleIconFrame,QFrame#DefaultHomeMenuIconFrame,QFrame#DefaultServerIconFrame,QFrame#DefaultEthernetIconFrame,QFrame#Default4GIconFrame,QFrame#WifiSignalIconFrame { background: rgb(149,165,166); }
+QFrame#WifiIconFrame { background: rgb(81,137,185); }
+QFrame#MobileIconFrame { background: rgb(155,89,182); }
+
+/* ICON LABEL - Replaces multiple IconLabel IDs */
+QLabel[iconLabel="true"]
+{
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+    background: transparent;
+}
+
+/* TITLE LABEL - Replaces 11 individual TitleLabel IDs */
+QLabel[titleLabel="true"]
+{
+    font-size: 16px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+/* DESCRIPTION/VALUE LABEL - Replaces multiple desc/value label IDs */
+QLabel[descLabel="true"]
+{
+    font-size: 12px;
+    color: rgb(102,102,102);
+    background: transparent;
+}
+
+/* STATUS INDICATORS */
+QLabel#ConnectedIndicator { background-color: rgb(76,175,80); }
+QLabel#DisconnectedIndicator { background-color: rgb(244,67,54); }
+QLabel#AvailableIndicator { background-color: rgb(255,152,0); }
+
+/* TOGGLE CHECKBOXES - Consolidated */
+QCheckBox#IdentityToggleBox,
+QCheckBox#AboutToggleBox,
+QCheckBox#EthernetToggleBox,
+QCheckBox#Network4GToggleBox,
+QCheckBox#WifiToggleBox
+{
+    outline: 0px;
+}
+
+QCheckBox#IdentityToggleBox::indicator:checked,
+QCheckBox#AboutToggleBox::indicator:checked,
+QCheckBox#EthernetToggleBox::indicator:checked,
+QCheckBox#Network4GToggleBox::indicator:checked,
+QCheckBox#WifiToggleBox::indicator:checked
+{
+    image: url(:/Images/wifiOn.png);
+}
+
+QCheckBox#IdentityToggleBox::indicator:unchecked,
+QCheckBox#AboutToggleBox::indicator:unchecked,
+QCheckBox#EthernetToggleBox::indicator:unchecked,
+QCheckBox#Network4GToggleBox::indicator:unchecked,
+QCheckBox#WifiToggleBox::indicator:unchecked
+{
+    image: url(:/Images/wifiOff.png);
+}
+
+QCheckBox#IdentityToggleBox::indicator,
+QCheckBox#AboutToggleBox::indicator,
+QCheckBox#EthernetToggleBox::indicator,
+QCheckBox#Network4GToggleBox::indicator,
+QCheckBox#WifiToggleBox::indicator
+{
+    text-align: center;
+    width: 64px;
+    height: 52px;
+}
+
+/* ARROW LABELS - Replaces 7 individual ArrowLabel IDs */
+QLabel[arrowLabel="true"]
+{
+    color: rgb(187,187,187);
+    font-size: 20px;
+    font-weight: bold;
+    background: transparent;
+}
+
+/* ENHANCED SCROLL BARS */
+QScrollArea QScrollBar:vertical
+{
+    background: rgb(240,240,240);
+    width: 8px;
+    border-radius: 4px;
+}
+
+QScrollArea QScrollBar::handle:vertical
+{
+    background: rgb(204,204,204);
+    border-radius: 4px;
+    min-height: 20px;
+}
+
+QScrollArea QScrollBar::handle:vertical:hover
+{
+    background: rgb(153,153,153);
+}
+
+QScrollArea QScrollBar::add-line:vertical,
+QScrollArea QScrollBar::sub-line:vertical
+{
+    border: none;
+    background: none;
+}
+
+/* SPECIAL CARD STATES */
+QFrame#WifiConnectedCardWidget
+{
+    background-color: rgb(232,245,233);
+    border: 2px solid rgb(76,175,80);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+QFrame#WifiConnectingCardWidget
+{
+    background-color: rgb(255,248,225);
+    border: 2px solid rgb(255,193,7);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+QLabel#WifiConnectedStatusLabel
+{
+    font-size: 12px;
+    color: rgb(76,175,80);
+    background: transparent;
+    font-weight: bold;
+}
+
+QLabel#WifiConnectingStatusLabel
+{
+    font-size: 12px;
+    color: rgb(255,193,7);
+    background: transparent;
+    font-weight: bold;
+}
+
+/* SERVER SETUP SPECIFIC */
+QLabel#ServerConfigReadOnlyLabel
+{
+    font-size: 12px;
+    color: rgb(153,153,153);
+    background: transparent;
+    font-style: italic;
+}
+
+QLineEdit#ServerConfigEdit
+{
+    font-size: 14px;
+    padding: 8px;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 6px;
+    background-color: white;
+}
+
+QLineEdit#ServerConfigReadOnlyEdit
+{
+    font-size: 14px;
+    padding: 8px;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 6px;
+    background-color: rgb(248,248,248);
+    color: rgb(102,102,102);
+}
+
+QPushButton#SrvSetupConfirmButton
+{
+    font-size: 18px;
+    font-weight: bold;
+    color: white;
+    background: rgb(76,175,80);
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+}
+
+QPushButton#SrvSetupConfirmButton:hover
+{
+    background: rgb(67,160,71);
+}
+
+QPushButton#SrvSetupConfirmButton:pressed
+{
+    background: rgb(56,142,60);
+}
+
+/* ETHERNET VIEW SPECIFIC */
+QRadioButton#EthernetRadioButton
+{
+    font-size: 14px;
+    outline: 0px;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+QRadioButton#EthernetRadioButton::indicator 
+{
+    width: 20px;
+    height: 20px;
+}
+
+QRadioButton#EthernetRadioButton::indicator::unchecked
+{
+    image: url(:/Images/radiobutton_unchecked.png);
+}
+
+QRadioButton#EthernetRadioButton::indicator::checked
+{
+    image: url(:/Images/radiobutton_checked.png);
+}
+
+QLineEdit#EthernetInput
+{
+    height: 36px;
+    font-size: 14px;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background-color: white;
+}
+
+QLineEdit#EthernetInput:focus
+{
+    border: 2px solid rgb(76,175,80);
+}
+
+QLineEdit#EthernetInput:disabled
+{
+    background-color: rgb(245,245,245);
+    color: rgb(150,150,150);
+}
+
+QLabel#EthernetFormLabel
+{
+    font-size: 14px;
+    font-weight: 500;
+    color: rgb(44,62,80);
+    background: transparent;
 }

@@ -20,8 +20,16 @@ private:
 
 public:
     void appRecordData(const IdentifyFaceRecord_t &t){emit sigAppRecordData(t);}
+    bool pushRecordToServer(const QString &name, const QString &time, 
+                                                 const QString &imgPath, int rid);
 public:
     Q_SIGNAL void sigAppRecordData(const IdentifyFaceRecord_t);
+    Q_SIGNAL void sigManualPushProgress(int current, int total, bool success);
+    Q_SIGNAL void sigManualPushComplete(bool success, QString message);
+
+public:
+     Q_SLOT void slotManualPushRecords(const QDateTime &startDateTime, const QDateTime &endDateTime);
+
 private:
     Q_SLOT void slotAppRecordData(const IdentifyFaceRecord_t);
 

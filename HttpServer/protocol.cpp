@@ -671,7 +671,7 @@ void on_people_add(void *pReq, void *pResp)
 	if (result == 0)
 	{
 		bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(prp->person_uuid, prp->name, prp->id_card_no,
-				prp->card_no, prp->male, prp->group, "", faceFeature);
+				prp->card_no, prp->male, prp->group, "", faceFeature, QByteArray(), "", "", "", "", "", 0, 0);
 		LogD("%s %s[%d] RegPersonToDBAndRAM isSaveDBOk %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
 
 		root["result"] = "1";
@@ -769,7 +769,7 @@ void on_people_update(void *pReq, void *pResp)
 	if (ret == 0)
 	{
 		bool isSaveDBOk = RegisteredFacesDB::GetInstance()->RegPersonToDBAndRAM(prp->person_uuid, prp->name, prp->id_card_no,
-				prp->card_no, prp->male, prp->group, timeOfAccess, faceFeature);
+				prp->card_no, prp->male, prp->group, timeOfAccess, faceFeature, QByteArray(), "", "", "", "", "", 0, 0);
 		LogD("%s %s[%d] RegPersonToDBAndRAM result %d \n", __FILE__, __FUNCTION__, __LINE__, isSaveDBOk);
 		if(isSaveDBOk != true)
 		{
@@ -1417,7 +1417,7 @@ void on_people_set_pass_permision(void *pReq, void *pResp)
 	}
 
 	LogV("%s %s[%d] timeOfAccess %s\n", __FILE__, __FUNCTION__, __LINE__, timeOfAccess.toStdString().c_str());
-	ret = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(prp->person_uuid, "", "", "", "", "", timeOfAccess, "");
+	ret = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(prp->person_uuid, "", "", "", "", "", timeOfAccess, "", QByteArray(), "", "", "", "", "", 0);
 	LogV("%s %s[%d] UpdatePersonToDBAndRAM ret %d\n", __FILE__, __FUNCTION__, __LINE__, ret);
 	if (ret == 0)
 	{
@@ -1453,7 +1453,7 @@ void on_people_delete_pass_permision(void *pReq, void *pResp)
 	LogV("fun:test_on_people_delete_pass_permision \n ");
 	int result = -1;
 
-	result = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(prp->person_uuid, "", "", "", "", "", "", "");
+	result = RegisteredFacesDB::GetInstance()->UpdatePersonToDBAndRAM(prp->person_uuid, "", "", "", "", "", "", "", QByteArray(), "", "", "", "", "", 0);
 	if (result == 0)
 	{
 		memcpy(resp->message, "delete people permision ok.", strlen("delete people permision ok."));

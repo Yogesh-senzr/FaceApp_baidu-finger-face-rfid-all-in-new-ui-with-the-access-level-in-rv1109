@@ -13,11 +13,11 @@ private:
     void InitData();
     void InitConnect();
 private:
-    QLabel *m_pNameLabel;//姓名
-    QLabel *m_pSexLabel;//性别
-    QLabel *m_pTemperatureLabel;//温度
-    QLabel *m_pTransitTimeLabel;//通行时间
-    QLabel *m_pHumanFaceLabel;//人脸
+    QLabel *m_pNameLabel;
+    QLabel *m_pSexLabel;
+    QLabel *m_pTemperatureLabel;
+    QLabel *m_pTransitTimeLabel;
+    QLabel *m_pHumanFaceLabel;
 private:
     ViewAccessRecordsModel *const q_ptr;
 };
@@ -44,11 +44,11 @@ ViewAccessRecordsModel::~ViewAccessRecordsModel()
 
 void ViewAccessRecordsModelPrivate::InitUI()
 {
-    m_pNameLabel = new QLabel;//姓名
-    m_pSexLabel = new QLabel;//性别
-    m_pTemperatureLabel = new QLabel;//温度
-    m_pTransitTimeLabel = new QLabel;//通行时间
-    m_pHumanFaceLabel = new QLabel;//人脸
+    m_pNameLabel = new QLabel;
+    m_pSexLabel = new QLabel;
+    m_pTemperatureLabel = new QLabel;
+    m_pTransitTimeLabel = new QLabel;
+    m_pHumanFaceLabel = new QLabel;
 
     QFrame *f = new QFrame;
     f->setFrameShape(QFrame::VLine);

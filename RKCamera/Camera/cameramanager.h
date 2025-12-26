@@ -17,6 +17,7 @@ class CameraManager : public QObject
     Q_OBJECT
 public:
     explicit CameraManager(const QSize RgaResolution,const bool RgaMirrored,const qint32 RgaRotation,const QSize IrResolution,const bool IrMirrored,const qint32 IrRotation, const int w, const int h, QObject *parent= Q_NULLPTR);
+    static CameraManager* getInstance();
     ~CameraManager();
 public:
     void uninit();

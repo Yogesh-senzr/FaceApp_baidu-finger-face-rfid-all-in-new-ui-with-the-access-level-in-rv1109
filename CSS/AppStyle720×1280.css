@@ -66,8 +66,6 @@ QListWidget::item:hover
 {
     color:rgb(235,235,239);
 }
-/*自定义例表内容窗口高度，固定*/
-/*QWidget#CItemWidget{}*/
 /*QLabel样式*/
 QLabel
 {
@@ -220,7 +218,7 @@ QRadioButton#choiceRadioButton::indicator::checked{image: url(:/Images/choiceRad
 
 /**/
 QTimeEdit{font-size:22px;}
-/*自定义弹出对话框样式表 宽度和高度由代写固定在650 *230*/
+/*自定义弹出对话框样式表 宽度和高度由代码固定在650 *230*/
 QDialog#OperationTipsFrm
 {
     background-color:rgb(231, 231, 231);
@@ -437,29 +435,6 @@ QPushButton#UsedSpaceButton
     max-width:32px;
 }
 /*主页时钟显示*/
-/**
-QWidget#FaceHomeTitleFrm
-{
-    background-color:rgba(0, 0, 0, 100);
-}
-**/
-/*测温环境*/
-QDialog#TemperatureModeFrm
-{
-    background-color:rgb(231, 231, 231);
-    border:1px solid #bfbfbf;
-    outline: none;
-    min-width:560px;
-    max-width:560px;
-    height:430px;
-}
-/*时间日期更改*/
-QDialog#ChangeDateTimeFrm
-{
-    background-color:rgb(231, 231, 231);
-    border:1px solid #bfbfbf;
-    outline: none;
-}
 QLabel#ClockLabel
 {
     border:0px;
@@ -573,7 +548,6 @@ QHeaderView::section
 QTableWidget::item{border-bottom:1px solid #EEF1F7;}
 QTableWidget::item::selected{color:red;background:#EFF4FF;}
 
-
 /*健康码界面主标题*/
 QLabel#LRHealthCodeFrmTitle
 {
@@ -646,7 +620,504 @@ QLabel#CenterHomeIcon
     padding: 10px;
 }
 
-
 QPushButton#CenterHomeIcon:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+/* ========== OPTIMIZED SECTION: Replaced 11 ID selectors with 1 shared class ========== */
+/* Page-level Main Widget - Single Background Style */
+QWidget[page="main"]
+{
+    background: rgb(240, 240, 240);
+}
+
+/* ========== OPTIMIZED: Replaced 11 Header Frame IDs with 1 shared style ========== */
+/* Header Frames - Universal Style */
+QFrame[header="frame"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 0px;
+    padding: 0px;
+}
+
+/* ========== OPTIMIZED: Icon Frame colors set via dynamic property, not ID ========== */
+/* Icon Frames - Universal Style (color set via setProperty in C++) */
+QFrame[icon="frame"]
+{
+    border-radius: 12px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+}
+
+/* Home Menu Icon Frames - Larger size */
+QFrame[icon="home-frame"]
+{
+    border-radius: 15px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+}
+
+/* WiFi Signal Frames - Specific size */
+QFrame[icon="signal-frame"]
+{
+    border-radius: 8px;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
+}
+
+/* System Icon Frames - Slightly larger */
+QFrame[icon="system-frame"]
+{
+    border-radius: 11px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+/* Ethernet Icon Frames - Medium size */
+QFrame[icon="ethernet-frame"]
+{
+    border-radius: 10px;
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+}
+
+/* ========== OPTIMIZED: Replaced 11 Header Title IDs with 1 shared class ========== */
+/* Header Titles - Universal Style */
+QLabel[title="header"]
+{
+    font-size: 22px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    margin-left: 12px;
+    background: transparent;
+}
+
+/* Home Menu Header - Slightly larger */
+QLabel[title="home-header"]
+{
+    font-size: 24px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    margin-left: 15px;
+    background: transparent;
+}
+
+/* ========== OPTIMIZED: Replaced multiple Scroll Area IDs with 1 shared style ========== */
+/* Scroll Areas - Universal Style */
+QScrollArea[scroll="area"]
+{
+    background: transparent;
+    border: none;
+}
+
+/* ========== OPTIMIZED: Replaced Content Widget IDs with 1 shared style ========== */
+/* Content Widgets - Universal Style */
+QWidget[content="widget"]
+{
+    background: transparent;
+}
+
+/* ========== OPTIMIZED: Replaced 12 Card Widget IDs with attribute selector ========== */
+/* Card Widgets - Universal Style */
+QFrame[card="widget"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* ========== OPTIMIZED: Single hover rule, border color set dynamically in C++ ========== */
+/* Card Hover State - Color set via setProperty("hover-color", "#xxxxx") in C++ */
+QFrame[card="widget"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid;
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* Home Menu Card - Specific styling */
+QFrame[card="home-menu"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 15px;
+    margin: 5px;
+    padding: 20px;
+    min-height: 160px;
+    min-width: 200px;
+}
+
+QFrame[card="home-menu"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid #43A047;
+    border-radius: 15px;
+    margin: 5px;
+    padding: 20px;
+    min-height: 160px;
+    min-width: 200px;
+}
+
+/* System Card - Compact styling */
+QFrame[card="system"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 4px 6px;
+    padding: 12px 16px;
+    min-height: 60px;
+    max-height: 80px;
+}
+
+QFrame[card="system"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid #607D8B;
+    border-radius: 12px;
+}
+
+/* About Card - Standard with adjusted padding */
+QFrame[card="about"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px 20px;
+}
+
+QFrame[card="about"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid #757575;
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* Identity Card - Slightly smaller */
+QFrame[card="identity"]
+{
+    background-color: white;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 10px;
+    margin: 5px;
+    padding: 12px 15px;
+}
+
+QFrame[card="identity"][hovered="true"]
+{
+    background-color: white;
+    border: 2px solid #9C27B0;
+    border-radius: 10px;
+    margin: 5px;
+    padding: 12px 15px;
+}
+
+/* Special WiFi Cards */
+QFrame#WifiConnectedCardWidget
+{
+    background-color: rgb(232,245,233);
+    border: 2px solid rgb(76,175,80);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+QFrame#WifiConnectingCardWidget
+{
+    background-color: rgb(255,248,225);
+    border: 2px solid rgb(255,193,7);
+    border-radius: 12px;
+    margin: 6px;
+    padding: 16px;
+}
+
+/* ========== OPTIMIZED: Replaced Icon Label IDs with shared class ========== */
+/* Icon Labels - Universal Style */
+QLabel[icon-label="standard"]
+{
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+    background: transparent;
+}
+
+/* Home Menu Icon Label - Larger */
+QLabel[icon-label="home"]
+{
+    color: white;
+    font-size: 32px;
+    font-weight: bold;
+    background: transparent;
+}
+
+/* ========== OPTIMIZED: Replaced Title Label IDs with shared class ========== */
+/* Title Labels - Universal Style */
+QLabel[label="title"]
+{
+    font-size: 18px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+/* Home Menu Title - Slightly larger */
+QLabel[label="home-title"]
+{
+    font-size: 20px;
+    font-weight: bold;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+/* ========== OPTIMIZED: Replaced Description/Status Label IDs with shared class ========== */
+/* Description/Status Labels - Universal Style */
+QLabel[label="desc"]
+{
+    font-size: 14px;
+    color: rgb(102,102,102);
+    background: transparent;
+}
+
+/* Home Menu Description - Slightly larger */
+QLabel[label="home-desc"]
+{
+    font-size: 16px;
+    color: rgb(102,102,102);
+    background: transparent;
+}
+
+/* Special Status Labels */
+QLabel#WifiConnectedStatusLabel
+{
+    font-size: 14px;
+    color: #4CAF50;
+    background: transparent;
+    font-weight: bold;
+}
+
+QLabel#WifiConnectingStatusLabel
+{
+    font-size: 14px;
+    color: #FFC107;
+    background: transparent;
+    font-weight: bold;
+}
+
+/* ========== OPTIMIZED: Replaced Arrow Label IDs with shared class ========== */
+/* Arrow Labels - Universal Style */
+QLabel[arrow="label"]
+{
+    color: rgb(187,187,187);
+    font-size: 20px;
+    font-weight: bold;
+    background: transparent;
+}
+
+/* Status Indicators */
+QLabel#ConnectedIndicator
+{
+    background-color: #4CAF50;
+    border-radius: 4px;
+    min-width: 8px;
+    max-width: 8px;
+    min-height: 8px;
+    max-height: 8px;
+}
+
+QLabel#DisconnectedIndicator
+{
+    background-color: #F44336;
+    border-radius: 4px;
+    min-width: 8px;
+    max-width: 8px;
+    min-height: 8px;
+    max-height: 8px;
+}
+
+QLabel#AvailableIndicator
+{
+    background-color: #FF9800;
+    border-radius: 4px;
+    min-width: 8px;
+    max-width: 8px;
+    min-height: 8px;
+    max-height: 8px;
+}
+
+/* Enhanced Scroll Bars */
+QScrollArea QScrollBar:vertical
+{
+    background: rgb(240,240,240);
+    width: 8px;
+    border-radius: 4px;
+}
+
+QScrollArea QScrollBar::handle:vertical
+{
+    background: rgb(204,204,204);
+    border-radius: 4px;
+    min-height: 20px;
+}
+
+QScrollArea QScrollBar::handle:vertical:hover
+{
+    background: rgb(153,153,153);
+}
+
+QScrollArea QScrollBar::add-line:vertical,
+QScrollArea QScrollBar::sub-line:vertical
+{
+    border: none;
+    background: none;
+}
+
+/* Input Fields */
+QLineEdit#ServerConfigEdit,
+QLineEdit#ServerConfigReadOnlyEdit,
+QLineEdit#EthernetInput
+{
+    font-size: 16px;
+    padding: 10px;
+    border: 1px solid rgb(224,224,224);
+    border-radius: 6px;
+    background-color: white;
+}
+
+QLineEdit#ServerConfigReadOnlyEdit
+{
+    background-color: rgb(248,248,248);
+    color: rgb(102,102,102);
+}
+
+QLineEdit#EthernetInput:focus
+{
+    border: 2px solid #4CAF50;
+}
+
+QLineEdit#EthernetInput:disabled
+{
+    background-color: rgb(245,245,245);
+    color: rgb(150,150,150);
+}
+
+/* Radio Buttons */
+QRadioButton#EthernetRadioButton
+{
+    font-size: 16px;
+    outline: 0px;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+QRadioButton#EthernetRadioButton::indicator 
+{
+    width: 20px;
+    height: 20px;
+}
+
+QRadioButton#EthernetRadioButton::indicator::unchecked
+{
+    image: url(:/Images/radiobutton_unchecked.png);
+}
+
+QRadioButton#EthernetRadioButton::indicator::checked
+{
+    image: url(:/Images/radiobutton_checked.png);
+}
+
+/* Form Labels */
+QLabel#EthernetFormLabel,
+QLabel#EthernetParamLabel
+{
+    font-size: 16px;
+    font-weight: 500;
+    color: rgb(44,62,80);
+    background: transparent;
+}
+
+/* Toggle CheckBoxes */
+QCheckBox#IdentityToggleBox,
+QCheckBox#AboutToggleBox,
+QCheckBox#EthernetToggleBox,
+QCheckBox#Network4GToggleBox,
+QCheckBox#WifiToggleBox
+{
+    outline: 0px;
+}
+
+QCheckBox#IdentityToggleBox::indicator:checked,
+QCheckBox#AboutToggleBox::indicator:checked,
+QCheckBox#EthernetToggleBox::indicator:checked,
+QCheckBox#Network4GToggleBox::indicator:checked,
+QCheckBox#WifiToggleBox::indicator:checked
+{
+    image: url(:/Images/wifiOn.png);
+}
+
+QCheckBox#IdentityToggleBox::indicator:unchecked,
+QCheckBox#AboutToggleBox::indicator:unchecked,
+QCheckBox#EthernetToggleBox::indicator:unchecked,
+QCheckBox#Network4GToggleBox::indicator:unchecked,
+QCheckBox#WifiToggleBox::indicator:unchecked
+{
+    image: url(:/Images/wifiOff.png);
+}
+
+QCheckBox#IdentityToggleBox::indicator,
+QCheckBox#AboutToggleBox::indicator,
+QCheckBox#EthernetToggleBox::indicator,
+QCheckBox#Network4GToggleBox::indicator,
+QCheckBox#WifiToggleBox::indicator
+{
+    text-align: center;
+    width: 64px;
+    height: 52px;
+}
+
+/* Buttons */
+QPushButton#SrvSetupConfirmButton
+{
+    font-size: 20px;
+    font-weight: bold;
+    color: white;
+    background: #4CAF50;
+    border: none;
+    border-radius: 8px;
+    padding: 14px 28px;
+}
+
+QPushButton#SrvSetupConfirmButton:hover
+{
+    background: #45a049;
+}
+
+QPushButton#SrvSetupConfirmButton:pressed
+{
+    background: #3d8b40;
+}
+
+/* Network Input Frame */
+QFrame#NetworkInputFrame
+{
+    background: transparent;
+    border: none;
 }

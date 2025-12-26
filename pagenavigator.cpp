@@ -1,112 +1,193 @@
 ﻿#include "pagenavigator.h"
-#include "ui_pagenavigator.h"
+#include <QTimer>
+#include <QApplication>
 
-PageNavigator::PageNavigator(int blockSize/* = 3*/, QWidget *parent/* = nullptr*/)
-	: QWidget(parent)
-	, ui(new Ui::PageNavigator)
-	, m_maxPage(0)
+PageNavigator::PageNavigator(int blockSize, QWidget *parent)
+    : QWidget(parent)
+    , m_currentPage(1)
+    , m_maxPage(1)
+    , m_blockSize(blockSize)
+    , m_currentPageButton(nullptr)
+    , m_clickAnimation(nullptr)
 {
-    ui->setupUi(this);
-    this->setBlockSize(blockSize);
-	this->initialize();
-    this->setMaxPage(1);
-	
-	this->setFixedHeight(36);
-	QString qss = QString(".QLabel[page=\"true\"] { padding: 1px; }")
-		+ QString(".QLabel[currentPage=\"true\"] { color: rgb(112, 184, 240);}")
-		+ QString(".QLabel[page=\"true\"]:hover { color: white; border-radius: 5px; background-color: qlineargradient(spread:reflect, x1:0, y1:0, x2:0, y2:1, stop:0 rgba(53, 121, 238, 255), stop:1 rgba(0, 202, 237, 255));}");
-	this->setStyleSheet(qss);
+    setBlockSize(blockSize);
+    setupUI();
+    applyModernStyles();
+    setMaxPage(1);
+    setFixedHeight(60); // Increased from original to accommodate larger buttons
 }
 
 PageNavigator::~PageNavigator()
 {
-    delete ui;
-    delete m_pageLabels;
+    if (m_clickAnimation) {
+        m_clickAnimation->deleteLater();
+    }
+}
+    
+void PageNavigator::setupUI()
+{
+    setObjectName("PageNavigator");
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    
+    // Main layout - REDUCED VERTICAL MARGINS
+    m_mainLayout = new QHBoxLayout(this);
+    m_mainLayout->setContentsMargins(20, 5, 20, 5); // Reduced vertical margins
+    m_mainLayout->setSpacing(10);
+    
+    // Navigation buttons
+    m_firstButton = createNavButton("«", tr("First Page"));
+    m_prevButton = createNavButton("‹", tr("Previous Page"));
+    m_nextButton = createNavButton("›", tr("Next Page"));
+    m_lastButton = createNavButton("»", tr("Last Page"));
+    
+    // Button container
+    m_buttonContainer = new QWidget;
+    m_buttonContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_buttonLayout = new QHBoxLayout(m_buttonContainer);
+    m_buttonLayout->setContentsMargins(0, 0, 0, 0);
+    m_buttonLayout->setSpacing(5);
+    
+    // Add navigation buttons
+    m_mainLayout->addWidget(m_firstButton);
+    m_mainLayout->addWidget(m_prevButton);
+    m_mainLayout->addStretch();
+    m_mainLayout->addWidget(m_buttonContainer, 1);
+    m_mainLayout->addStretch();
+    m_mainLayout->addWidget(m_nextButton);
+    m_mainLayout->addWidget(m_lastButton);
+    
+    // Connect signals
+    connect(m_firstButton, &QPushButton::clicked, this, &PageNavigator::onFirstButtonClicked);
+    connect(m_prevButton, &QPushButton::clicked, this, &PageNavigator::onPrevButtonClicked);
+    connect(m_nextButton, &QPushButton::clicked, this, &PageNavigator::onNextButtonClicked);
+    connect(m_lastButton, &QPushButton::clicked, this, &PageNavigator::onLastButtonClicked);
 }
 
-static inline QString pageToText(int page)
+void PageNavigator::applyModernStyles()
 {
-	return QString::number(page);
+    setStyleSheet(
+        // Main container - EXPAND VERTICALLY
+        "QWidget#PageNavigator {"
+        "    background: transparent;"
+        "}"
+        
+        // Navigation buttons - EXPAND VERTICALLY
+        "QPushButton#NavButton {"
+        "    background: #f8f9fa;"
+        "    border: 1px solid #e1e5e9;"
+        "    color: #6c757d;"
+        "    font-size: 14px;"
+        "    font-weight: bold;"
+        "    min-width: 45px;"  // Increased width
+        "    min-height: 45px;" // Increased height
+        "    max-height: 45px;" // Fixed height
+        "    border-radius: 8px;"
+        "}"
+        "QPushButton#NavButton:hover {"
+        "    background: #e9ecef;"
+        "    border-color: #2196F3;"
+        "    color: #2196F3;"
+        "}"
+        "QPushButton#NavButton:disabled {"
+        "    background: #f1f3f4;"
+        "    border-color: #e8eaed;"
+        "    color: #dadce0;"
+        "}"
+        
+        // Page buttons - EXPAND VERTICALLY
+        "QPushButton#PageButton {"
+        "    background: transparent;"
+        "    border: 1px solid #e1e5e9;"
+        "    color: #6c757d;"
+        "    font-size: 14px;"
+        "    font-weight: 600;"
+        "    min-width: 45px;"  // Increased width
+        "    min-height: 45px;" // Increased height
+        "    max-height: 45px;" // Fixed height
+        "    border-radius: 8px;"
+        "}"
+        "QPushButton#PageButton:hover {"
+        "    background: #f8f9fa;"
+        "    border-color: #2196F3;"
+        "    color: #2196F3;"
+        "}"
+        
+        // Active page button - EXPAND VERTICALLY
+        "QPushButton#PageButtonActive {"
+        "    background: #2196F3;"
+        "    border: 1px solid #2196F3;"
+        "    color: white;"
+        "    font-size: 14px;"
+        "    font-weight: 700;"
+        "    min-width: 45px;"  // Increased width
+        "    min-height: 45px;" // Increased height
+        "    max-height: 45px;" // Fixed height
+        "    border-radius: 8px;"
+        "}"
+        
+        // Ellipsis label - EXPAND VERTICALLY
+        "QLabel#EllipsisLabel {"
+        "    color: #9e9e9e;"
+        "    font-weight: bold;"
+        "    font-size: 16px;"
+        "    padding: 0 5px;"
+        "    min-height: 45px;" // Match button height
+        "    max-height: 45px;" // Fixed height
+        "}"
+    );
 }
 
-// 分成三个部分, 左...中...右
-void PageNavigator::initialize()
+QPushButton* PageNavigator::createNavButton(const QString &text, const QString &tooltip)
 {
-	ui->pageLineEdit->installEventFilter(this);
-    ui->label->installEventFilter(this);
-	ui->pageLineEdit->setValidator(new QIntValidator(1, 10000000, this));
+    QPushButton *button = new QPushButton(text);
+    button->setObjectName("NavButton");
+    button->setFixedSize(45, 45); // Increased size
+    button->setToolTip(tooltip);
+    button->setCursor(Qt::PointingHandCursor);
+    return button;
+}
 
-	ui->nextPageLabel->setProperty("page", "true");
-	ui->previousPageLabel->setProperty("page", "true");
-	
-	ui->nextPageLabel->installEventFilter(this);
-	ui->previousPageLabel->installEventFilter(this);
-
-	m_pageLabels = new QList<QLabel *>();
-
-	QHBoxLayout *leftLayout = new QHBoxLayout();
-	QHBoxLayout *centerLayout = new QHBoxLayout();
-	QHBoxLayout *rightLayout = new QHBoxLayout();
-	leftLayout->setContentsMargins(0, 0, 0, 0);
-	leftLayout->setSpacing(0);
-	
-	centerLayout->setContentsMargins(0, 0, 0, 0);
-	centerLayout->setSpacing(0);
-	
-	rightLayout->setContentsMargins(0, 0, 0, 0);
-	rightLayout->setSpacing(0);
-
-	for (int i = 0; i < m_blockSize * 3; ++i)
-	{
-		QLabel *label = new QLabel(pageToText(i + 1));
-		label->setProperty("page", "true");
-		label->installEventFilter(this);
-
-		m_pageLabels->append(label);
-
-		if (i < m_blockSize)
-		{
-			leftLayout->addWidget(label);
-		}
-		else if (i < m_blockSize * 2)
-		{
-			centerLayout->addWidget(label);
-		}
-		else
-		{
-			rightLayout->addWidget(label);
-		}
-	}
-
-	ui->leftPagesWidget->setLayout(leftLayout);
-	ui->centerPagesWidget->setLayout(centerLayout);
-	ui->rightPagesWidget->setLayout(rightLayout);
+QPushButton* PageNavigator::createPageButton(int pageNumber)
+{
+    QPushButton *button = new QPushButton(QString::number(pageNumber));
+    button->setProperty("pageNumber", pageNumber);
+    button->setFixedSize(45, 45); // Increased size
+    button->setCursor(Qt::PointingHandCursor);
+    button->setToolTip(tr("Page %1").arg(pageNumber));
+    
+    if (pageNumber == m_currentPage) {
+        button->setObjectName("PageButtonActive");
+        m_currentPageButton = button;
+    } else {
+        button->setObjectName("PageButton");
+    }
+    
+    connect(button, &QPushButton::clicked, this, &PageNavigator::onPageButtonClicked);
+    return button;
 }
 
 void PageNavigator::setMaxPage(int page)
 {
     page = qMax(page, 1);
-
-    if (m_maxPage != page)
-	{
+    if (m_maxPage != page) {
         m_maxPage = page;
-        m_currentPage = 1;
-        updatePageLabels();
+        if (m_currentPage > m_maxPage) {
+            m_currentPage = m_maxPage;
+        }
+        updatePageButtons();
     }
 }
 
-void PageNavigator::setCurrentPage(int page, bool signalEmitted/* = false*/)
+void PageNavigator::setCurrentPage(int page, bool signalEmitted)
 {
     page = qMax(page, 1);
     page = qMin(page, m_maxPage);
 
-    if (page != m_currentPage)
-	{
+    if (page != m_currentPage) {
         m_currentPage = page;
-        updatePageLabels();
+        updatePageButtons();
 
-        if (signalEmitted)
-		{
+        if (signalEmitted) {
             emit currentPageChanged(page);
         }
     }
@@ -114,158 +195,155 @@ void PageNavigator::setCurrentPage(int page, bool signalEmitted/* = false*/)
 
 void PageNavigator::setBlockSize(int blockSize)
 {
-    // 为了便于计算, block size 必须是奇数, 且最小为3
-    blockSize = qMax(blockSize, 3);
-    if (blockSize % 2 == 0)
-	{
+    blockSize = qMax(blockSize, 5);
+    if (blockSize % 2 == 0) {
         ++blockSize;
     }
     m_blockSize = blockSize;
 }
 
-void PageNavigator::updatePageLabels()
+void PageNavigator::updatePageButtons()
 {
-    ui->leftSeparateLabel->hide();
-    ui->rightSeparateLabel->hide();
-
-    if (m_maxPage <= m_blockSize * 3)
-	{
-        for (int i = 0; i < m_pageLabels->count(); i += 1)
-		{
-            QLabel *label = m_pageLabels->at(i);
-            if (i < m_maxPage)
-			{
-				label->setText(pageToText(i + 1));
-                label->show();
-            }
-			else
-			{
-                label->hide();
-            }
-
-            if (m_currentPage - 1 == i)
-			{
-                label->setProperty("currentPage", "true");
-            }
-			else
-			{
-                label->setProperty("currentPage", "false");
-            }
-
-            label->setStyleSheet("/**/");
+    // Clear existing page buttons
+    for (QPushButton *button : m_pageButtons) {
+        m_buttonLayout->removeWidget(button);
+        button->deleteLater();
+    }
+    m_pageButtons.clear();
+    m_currentPageButton = nullptr;
+    
+    // Clear all items from layout
+    QLayoutItem *item;
+    while ((item = m_buttonLayout->takeAt(0)) != nullptr) {
+        if (item->widget()) {
+            item->widget()->deleteLater();
+        } else {
+            delete item;
         }
+    }
+    
+    if (m_maxPage <= 1) {
+        // Hide navigation if only one page
+        setVisible(false);
         return;
     }
-
-    // 以下情况为maxPageNumber大于blockSize * 3, 所有的页码label都要显示
-    // c 为 currentPage
-    // n 为 block size
-    // m 为 maxPage
-
-    // 1. c ∈ [1, n + n/2 + 1]: 显示前 n * 2 个, 后 n 个: 只显示右边的分隔符
-    // 2. c ∈ [m - n - n/2, m]: 显示前 n 个, 后 n * 2 个: 只显示左边的分隔符
-    // 3. 显示[1, n], [c - n/2, c + n/2], [m - 2*n + 1, m]: 两个分隔符都显示
-
-    int c = m_currentPage;
-    int n = m_blockSize;
-    int m = m_maxPage;
-    int centerStartPage = 0;
-    if (c >= 1 && c <= n + n / 2 + 1)
-	{
-        // 1. c ∈ [1, n + n/2 + 1]: 显示前 n * 2 个, 后 n 个: 只显示右边的分隔符
-        centerStartPage = n + 1;
-        ui->rightSeparateLabel->show();
-    }
-	else if (c >= m - n - n / 2 && c <= m)
-	{
-        // 2. c ∈ [m - n - n/2, m]: 显示前 n 个, 后 n * 2 个: 只显示左边的分隔符
-        centerStartPage = m - n - n + 1;
-        ui->leftSeparateLabel->show();
-    }
-	else
-	{
-        // 3. 显示[1, n], [c - n/2, c + n/2], [m - n + 1, m]: 两个分隔符都显示
-        centerStartPage = c - n / 2;
-        ui->rightSeparateLabel->show();
-        ui->leftSeparateLabel->show();
-    }
-
-    for (int i = 0; i < n; ++i)
-	{
-		m_pageLabels->at(i)->setText(pageToText(i + 1));                     // 前面 n 个
-		m_pageLabels->at(n + i)->setText(pageToText(centerStartPage + i));   // 中间 n 个
-		m_pageLabels->at(3 * n - i - 1)->setText(pageToText(m - i));         // 后面 n 个
-    }
-
-    for (int i = 0; i < m_pageLabels->count(); ++i)
-	{
-        QLabel *label = m_pageLabels->at(i);
-        int page = label->text().toInt();
-        if (page == m_currentPage)
-		{
-            label->setProperty("currentPage", "true");
+    
+    setVisible(true);
+    
+    // Calculate page range to display
+    int startPage = 1;
+    int endPage = m_maxPage;
+    
+    if (m_maxPage > m_blockSize) {
+        int halfBlock = m_blockSize / 2;
+        startPage = qMax(1, m_currentPage - halfBlock);
+        endPage = qMin(m_maxPage, startPage + m_blockSize - 1);
+        
+        if (endPage - startPage + 1 < m_blockSize) {
+            startPage = qMax(1, endPage - m_blockSize + 1);
         }
-		else
-		{
-            label->setProperty("currentPage", "false");
+    }
+    
+    // Add page buttons
+    if (startPage > 1) {
+        QPushButton *firstBtn = createPageButton(1);
+        m_pageButtons.append(firstBtn);
+        m_buttonLayout->addWidget(firstBtn);
+        
+        if (startPage > 2) {
+QLabel *ellipsis = new QLabel("...");
+ellipsis->setObjectName("EllipsisLabel");
+ellipsis->setAlignment(Qt::AlignCenter);
+ellipsis->setFixedSize(35, 45); // Increased height to match buttons
+m_buttonLayout->addWidget(ellipsis);
         }
+    }
+    
+    for (int i = startPage; i <= endPage; ++i) {
+        QPushButton *pageBtn = createPageButton(i);
+        m_pageButtons.append(pageBtn);
+        m_buttonLayout->addWidget(pageBtn);
+    }
+    
+    if (endPage < m_maxPage) {
+        if (endPage < m_maxPage - 1) {
+            QLabel *ellipsis = new QLabel("...");
+            ellipsis->setObjectName("EllipsisLabel");
+            ellipsis->setAlignment(Qt::AlignCenter);
+            ellipsis->setFixedSize(30, 40);
+            m_buttonLayout->addWidget(ellipsis);
+        }
+        
+        QPushButton *lastBtn = createPageButton(m_maxPage);
+        m_pageButtons.append(lastBtn);
+        m_buttonLayout->addWidget(lastBtn);
+    }
+    
+    // Update button states
+    m_firstButton->setEnabled(m_currentPage > 1);
+    m_prevButton->setEnabled(m_currentPage > 1);
+    m_nextButton->setEnabled(m_currentPage < m_maxPage);
+    m_lastButton->setEnabled(m_currentPage < m_maxPage);
+}
 
-        label->setStyleSheet("/**/");
-        label->show();
+void PageNavigator::animateButtonClick(QPushButton *button)
+{
+    if (!button) return;
+    
+    if (m_clickAnimation) {
+        m_clickAnimation->stop();
+        m_clickAnimation->deleteLater();
+    }
+    
+    m_clickAnimation = new QPropertyAnimation(button, "geometry");
+    m_clickAnimation->setDuration(120);
+    
+    QRect originalGeometry = button->geometry();
+    QRect scaledGeometry = originalGeometry.adjusted(2, 2, -2, -2);
+    
+    m_clickAnimation->setStartValue(scaledGeometry);
+    m_clickAnimation->setEndValue(originalGeometry);
+    m_clickAnimation->setEasingCurve(QEasingCurve::OutBack);
+    m_clickAnimation->start();
+}
+
+void PageNavigator::onPageButtonClicked()
+{
+    QPushButton *button = qobject_cast<QPushButton*>(sender());
+    if (!button) return;
+    
+    animateButtonClick(button);
+    
+    int pageNumber = button->property("pageNumber").toInt();
+    if (pageNumber != m_currentPage) {
+        setCurrentPage(pageNumber, true);
     }
 }
 
-bool PageNavigator::eventFilter(QObject *watched, QEvent *e)
+void PageNavigator::onPrevButtonClicked()
 {
-	if (e->type() == QEvent::MouseButtonRelease)
-	{
-		int page = -1;
-		if (watched == ui->previousPageLabel)
-		{
-			page = getCurrentPage() - 1;
-		}
-
-		if (watched == ui->nextPageLabel)
-		{
-			page = getCurrentPage() + 1;
-		}
-
-		for (int i = 0; i < m_pageLabels->count(); ++i)
-		{
-			if (watched == m_pageLabels->at(i))
-			{
-				page = m_pageLabels->at(i)->text().toInt();
-				break;
-			}
-		}
-
-		if (-1 != page)
-		{
-			if (!ui->pageLineEdit->text().isEmpty())
-			{
-				ui->pageLineEdit->clear();
-			}
-			setCurrentPage(page, true);
-			return true;
-		}
-	}
-
-	if (watched == ui->pageLineEdit && e->type() == QEvent::KeyRelease)
-	{
-		QKeyEvent *ke = static_cast<QKeyEvent *>(e);
-		if (ke->key() == Qt::Key_Enter || ke->key() == Qt::Key_Return)
-		{
-			setCurrentPage(ui->pageLineEdit->text().toInt(), true);
-			//setMaxPage(ui->pageLineEdit->text().toInt()); // 测试生成多个页码
-			return true;
-		}
-	}
-
-    if (watched == ui->label && e->type() == QEvent::MouseButtonPress)
-    {
-        setCurrentPage(ui->pageLineEdit->text().toInt(), true);
-        //setMaxPage(ui->pageLineEdit->text().toInt()); // 测试生成多个页码
-        return true;
+    animateButtonClick(m_prevButton);
+    if (m_currentPage > 1) {
+        setCurrentPage(m_currentPage - 1, true);
     }
-	return QWidget::eventFilter(watched, e);
+}
+
+void PageNavigator::onNextButtonClicked()
+{
+    animateButtonClick(m_nextButton);
+    if (m_currentPage < m_maxPage) {
+        setCurrentPage(m_currentPage + 1, true);
+    }
+}
+
+void PageNavigator::onFirstButtonClicked()
+{
+    animateButtonClick(m_firstButton);
+    setCurrentPage(1, true);
+}
+
+void PageNavigator::onLastButtonClicked()
+{
+    animateButtonClick(m_lastButton);
+    setCurrentPage(m_maxPage, true);
 }

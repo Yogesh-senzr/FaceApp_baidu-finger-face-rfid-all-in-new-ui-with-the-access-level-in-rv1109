@@ -46,6 +46,8 @@ public:
 private:
     void InitXlsx(QXlsx::Worksheet *);
     bool DealPersonInfo(const QVector<QString> &info);
+    bool AddFaceDataToUser(const QString &imagePath);
+    void AddFaceDataFromExcel();
 
 private:
     QMap<int, QString>mPersonXlsxHead;
@@ -156,7 +158,7 @@ bool ParsePersonXlsxPrivate::DealPersonInfo(const QVector<QString> &info)
     ret = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson(path, faceNum, threshold, FaceFeature);
 #endif
 
-    if((ret == 0) && (faceNum == 1) && (threshold >= 0.35)) {
+    if((ret == 0) && (faceNum == 1) && (threshold >= 0.85)) {
         // Check for duplicate faces
         QSqlQuery faceQuery(QSqlDatabase::database("isc_arcsoft_face"));
         faceQuery.prepare("SELECT feature FROM person");
@@ -195,6 +197,7 @@ bool ParsePersonXlsxPrivate::DealPersonInfo(const QVector<QString> &info)
 
     return false;
 }
+
 
 void ParsePersonXlsx::ImportPersonToDB()
 {
@@ -330,4 +333,178 @@ void ParsePersonXlsx::slotExportPersons()
 	
 	}
     //emit sigExportProgressShell(true, saveState, totalCnt, writeCnt);
+}
+
+bool ParsePersonXlsxPrivate::AddFaceDataToUser(const QString &imagePath)
+{
+    Q_Q(ParsePersonXlsx);
+    
+    // Extract employee ID from image filename (assuming format like "SZR1001.jpg")
+    QString empId = imagePath.split('.').first();
+    
+    // Find user by employee ID (assuming empId is stored in personid or another field)
+    QSqlQuery userQuery(QSqlDatabase::database("isc_arcsoft_face"));
+    userQuery.prepare("SELECT uuid, name, personid FROM person WHERE personid = ? OR uuid = ?");
+    userQuery.bindValue(0, empId);
+    userQuery.bindValue(1, empId);
+    
+    if (!userQuery.exec() || !userQuery.next()) {
+        qDebug() << "No user found with ID:" << empId;
+        return false;
+    }
+
+    QString userUuid = userQuery.value("uuid").toString();
+    QString userName = userQuery.value("name").toString();
+
+    // Construct full image path
+    QString fullPath;
+#ifdef Q_OS_WIN
+    fullPath = QString("C:\\Users\\63279\\Desktop\\人脸产品\\测试资源\\测试导入2万人脸\\") + imagePath;
+#else
+    fullPath = QString("/udisk/") + imagePath;
+#endif
+
+    // Verify image exists
+    QImage img = QImage(QString::fromUtf8(fullPath.toLatin1()));
+    if(img.isNull()) {
+        qDebug() << "Image not found or invalid:" << fullPath;
+        return false;
+    }
+
+    // Extract face features
+    int faceNum = 0;
+    double threshold = 0;
+    int ret = -1;
+    QByteArray faceFeature;
+
+#ifdef Q_OS_LINUX
+    ret = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->RegistPerson(fullPath, faceNum, threshold, faceFeature);
+#endif
+
+    if((ret != 0) || (faceNum != 1) || (threshold < 0.85)) {
+        qDebug() << "Face extraction failed. ret:" << ret << "faceNum:" << faceNum << "threshold:" << threshold;
+        return false;
+    }
+
+    // Check if user already has face data
+    QSqlQuery checkQuery(QSqlDatabase::database("isc_arcsoft_face"));
+    checkQuery.prepare("SELECT feature FROM person WHERE uuid = ? AND feature IS NOT NULL AND length(feature) > 0");
+    checkQuery.bindValue(0, userUuid);
+    
+    if (checkQuery.exec() && checkQuery.next()) {
+        qDebug() << "User already has face data:" << userName;
+        return false;
+    }
+
+    // Check for duplicate faces in existing registered users
+    QSqlQuery faceQuery(QSqlDatabase::database("isc_arcsoft_face"));
+    faceQuery.prepare("SELECT feature, uuid, name FROM person WHERE feature IS NOT NULL AND length(feature) > 0 AND uuid != ?");
+    faceQuery.bindValue(0, userUuid);
+    
+    if (faceQuery.exec()) {
+        while (faceQuery.next()) {
+            QByteArray dbFeature = faceQuery.value("feature").toByteArray();
+            if (!dbFeature.isEmpty()) {
+                double similarity = ((BaiduFaceManager *)qXLApp->GetAlgoFaceManager())->getFaceFeatureCompare_baidu(
+                    (unsigned char*)faceFeature.data(),
+                    faceFeature.size(),
+                    (unsigned char*)dbFeature.data(),
+                    dbFeature.size()
+                );
+                if(similarity > 0.8) {
+                    qDebug() << "Face already exists for user:" << faceQuery.value("name").toString();
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Update the user with face data
+    QSqlQuery updateQuery(QSqlDatabase::database("isc_arcsoft_face"));
+    updateQuery.prepare("UPDATE person SET feature = ?, featuresize = ? WHERE uuid = ?");
+    updateQuery.bindValue(0, faceFeature);
+    updateQuery.bindValue(1, faceFeature.size());
+    updateQuery.bindValue(2, userUuid);
+
+    if (!updateQuery.exec()) {
+        qDebug() << "Failed to update user with face data:" << updateQuery.lastError().text();
+        return false;
+    }
+
+    // Update in-memory data in RegisteredFacesDB
+    if (!RegisteredFacesDB::GetInstance()->UpdatePersonFaceFeature(userUuid, faceFeature)) {
+        qDebug() << "Failed to update in-memory face data for user:" << userName;
+        return false;
+    }
+
+    qDebug() << "Successfully added face data to user:" << userName << "UUID:" << userUuid << "Image:" << imagePath;
+    
+    // Emit signal to update UI
+    emit q->sigFaceDataUpdated(userUuid);
+    
+    return true;
+}
+
+void ParsePersonXlsxPrivate::AddFaceDataFromExcel()
+{
+    Q_Q(ParsePersonXlsx);
+    
+    int successCount = 0;
+    int failCount = 0;
+    int current = 0;
+    int total = mPersonXlsxData.count();
+
+    auto it = mPersonXlsxData.constBegin();
+    while(it != mPersonXlsxData.constEnd()) {
+        ++current;
+        
+        // Get the image path from the first (and only) column
+        if (!it.value().isEmpty()) {
+            QString imagePath = it.value().at(0);
+            
+            if (AddFaceDataToUser(imagePath)) {
+                ++successCount;
+            } else {
+                ++failCount;
+            }
+        } else {
+            ++failCount;
+        }
+
+        emit q->sigAddFaceProgressShell(false, total, current, successCount, failCount);
+        ++it;
+    }
+    
+    emit q->sigAddFaceProgressShell(true, total, current, successCount, failCount);
+}
+
+void ParsePersonXlsx::slotAddFaceDataFromXlsx(const QString Path)
+{
+    Q_D(ParsePersonXlsx);
+    
+    d->mPersonXlsxData.clear();
+    d->mPersonXlsxHead.clear();
+    
+    QXlsx::Document xlsx(Path);
+    QXlsx::Workbook *workBook = xlsx.workbook();
+    QXlsx::Worksheet *workSheet = static_cast<QXlsx::Worksheet*>(workBook->sheet(0));
+    
+    // For single column excel, we only read column A
+    d->mPersonXlsxHead.insert(0, "Image Path"); // Set a default header name
+    
+    int rowCount = workSheet->CellTabelCount();
+    
+    for (int row = 1; row <= rowCount; row++) { // Start from row 1 (assuming no header)
+        QVector<QString> data(1, QString()); // Only one column
+        QXlsx::Cell *cell = workSheet->cellAt(row, 1); // Column A
+        if (cell != NULL) {
+            data[0] = cell->value().toString();
+        }
+        
+        if (!data[0].isEmpty()) { // Only add non-empty paths
+            d->mPersonXlsxData[row] = data;
+        }
+    }
+
+    d->AddFaceDataFromExcel();
 }

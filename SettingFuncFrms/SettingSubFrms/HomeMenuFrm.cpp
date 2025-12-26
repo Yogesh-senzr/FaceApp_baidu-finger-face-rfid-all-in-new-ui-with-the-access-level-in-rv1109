@@ -14,12 +14,12 @@ private:
     void InitData();
     void InitConnect();
 private:
-    QToolButton *m_pManagingPeopleBtn;//人员管理
-    QToolButton *m_pRecordsManagementBtn;//记录管理
-    QToolButton *m_pNetworkSetupBtn;//网络设置
-    QToolButton *m_pSrvSetupBtn;//服务器设置
-    QToolButton *m_pSysSetupBtn;//系统设置
-    QToolButton *m_pIdentifySetupBtn;//识别设置
+    QToolButton *m_pManagingPeopleBtn;
+    QToolButton *m_pRecordsManagementBtn;
+    QToolButton *m_pNetworkSetupBtn;
+    QToolButton *m_pSrvSetupBtn;
+    QToolButton *m_pSysSetupBtn;
+    QToolButton *m_pIdentifySetupBtn;
 private:
     HomeMenuFrm *const q_ptr;
 };
@@ -46,12 +46,12 @@ HomeMenuFrm::~HomeMenuFrm()
 
 void HomeMenuFrmPrivate::InitUI()
 {
-    m_pManagingPeopleBtn = new QToolButton;//人员管理
-    m_pRecordsManagementBtn = new QToolButton;//记录管理
-    m_pNetworkSetupBtn = new QToolButton;//网络设置
-    m_pSrvSetupBtn = new QToolButton;//服务器设置
-    m_pSysSetupBtn = new QToolButton;//系统设置
-    m_pIdentifySetupBtn = new QToolButton;//识别设置
+    m_pManagingPeopleBtn = new QToolButton;
+    m_pRecordsManagementBtn = new QToolButton;
+    m_pNetworkSetupBtn = new QToolButton;
+    m_pSrvSetupBtn = new QToolButton;
+    m_pSysSetupBtn = new QToolButton;
+    m_pIdentifySetupBtn = new QToolButton;
 
     QGridLayout *gridLayout = new QGridLayout;
     gridLayout->addWidget(m_pManagingPeopleBtn, 0, 0);
@@ -109,11 +109,11 @@ void HomeMenuFrmPrivate::InitData()
 
 void HomeMenuFrmPrivate::InitConnect()
 {
-    QObject::connect(m_pManagingPeopleBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigManagingPeopleClicked);//人员管理
-    QObject::connect(m_pRecordsManagementBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigRecordsManagementClicked);//记录管理
-    QObject::connect(m_pNetworkSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigNetworkSetupClicked);//网络设置
-    QObject::connect(m_pSrvSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigSrvSetupClicked);//服务器设置
-    QObject::connect(m_pSysSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigSysSetupClicked);//系统设置
-    QObject::connect(m_pIdentifySetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigIdentifySetupClicked);//识别设置
+    QObject::connect(m_pManagingPeopleBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigManagingPeopleClicked);
+    QObject::connect(m_pRecordsManagementBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigRecordsManagementClicked);
+    QObject::connect(m_pNetworkSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigNetworkSetupClicked);
+    QObject::connect(m_pSrvSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigSrvSetupClicked);
+    QObject::connect(m_pSysSetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigSysSetupClicked);
+    QObject::connect(m_pIdentifySetupBtn, &QToolButton::clicked, q_func(), &HomeMenuFrm::sigIdentifySetupClicked);
 }
 

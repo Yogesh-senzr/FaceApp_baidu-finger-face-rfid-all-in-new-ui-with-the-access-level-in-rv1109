@@ -7,6 +7,7 @@
 #include <QStyleOption>
 #include <QPainter>
 #include <QTimer>
+#include <QDebug>
 
 #include "BaseFace/BaseFaceManager.h"
 #include "BaiduFace/BaiduFaceManager.h"
@@ -23,23 +24,30 @@ private:
     void InitUI();
     void InitData();
     void InitConnect();
+    void updateClockDisplay();
 
 private:
-    QLabel *m_pBackPngLabel;//背景图片
+    QLabel *m_pTitleLabel;
     QLabel *m_pClockLabel;
     QLabel *m_pNetPngLabel;
-    QLabel *m_pHomeIconLabel;
-	QTimer *m_timer;
-    int mSec=0;//秒数
+    QLabel *m_pNetStatusLabel;
+    
+    QTimer *m_timer;
+    int mSec = 0;
+    
+    // Server time tracking
+    QDateTime m_serverTime;
+    QDateTime m_lastServerTimeUpdate;
+    bool m_useServerTime;
+    
 private:
     FaceHomeTitleFrm *m_FaceHomeTitleFrm;
 private:
     FaceHomeTitleFrm *const q_ptr;
-	
 };
 
 FaceHomeTitleFrmPrivate::FaceHomeTitleFrmPrivate(FaceHomeTitleFrm *dd)
-    : q_ptr(dd)
+    : q_ptr(dd), m_useServerTime(false)
 {
     this->InitUI();
     this->InitData();
@@ -59,95 +67,162 @@ FaceHomeTitleFrm::~FaceHomeTitleFrm()
 
 void FaceHomeTitleFrmPrivate::InitUI()
 {
+    // Create main layout
+    QHBoxLayout *mainLayout = new QHBoxLayout(q_func());
+    mainLayout->setContentsMargins(30, 15, 30, 15);
+    mainLayout->setSpacing(20);
+    
+    // Title section
+    m_pTitleLabel = new QLabel("eSSL Face Recognition System");
+    m_pTitleLabel->setStyleSheet(
+        "QLabel {"
+        "    font-size: 18px;"
+        "    font-weight: bold;"
+        "    color: #1a202c;"
+        "    background: transparent;"
+        "}"
+    );
+    
+    // Clock section
     m_pClockLabel = new QLabel;
+    m_pClockLabel->setStyleSheet(
+        "QLabel {"
+        "    font-size: 16px;"
+        "    font-weight: 600;"
+        "    color: #2d3748;"
+        "    background: transparent;"
+        "    font-family: 'Segoe UI', Arial, sans-serif;"
+        "}"
+    );
+    m_pClockLabel->setAlignment(Qt::AlignCenter);
+    
+    // Network status section
+    QHBoxLayout *netLayout = new QHBoxLayout;
+    netLayout->setSpacing(8);
+    netLayout->setContentsMargins(0, 0, 0, 0);
+    
     m_pNetPngLabel = new QLabel;
-    m_pBackPngLabel = new QLabel(q_func());
-    // Add the home icon
-    m_pHomeIconLabel = new QLabel(q_func());
-    m_pHomeIconLabel->setPixmap(QPixmap(":/Images/Homeicon.png").scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    m_pHomeIconLabel->setGeometry(10, 10, 32, 32);
-
-
-    m_pBackPngLabel->setGeometry(0, 0, DeskTopWidth, 42);
-    m_pBackPngLabel->setPixmap(QPixmap(":/Images/FaceHomeTitleFrm_bg.png").scaled(DeskTopWidth,42, Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
-    QHBoxLayout *layout = new QHBoxLayout(q_func());
-    layout->setMargin(0);
-    layout->addWidget(m_pHomeIconLabel); 
-    layout->addStretch();
-    layout->addSpacing(20);
-    layout->addWidget(m_pClockLabel);
-    layout->addStretch();
-    layout->addWidget(m_pNetPngLabel);
-    layout->addSpacing(10);
-	
-	m_timer = new QTimer();
+    m_pNetPngLabel->setFixedSize(20, 20);
+    m_pNetPngLabel->setScaledContents(true);
+    
+    m_pNetStatusLabel = new QLabel("Connected");
+    m_pNetStatusLabel->setStyleSheet(
+        "QLabel {"
+        "    font-size: 13px;"
+        "    color: #059669;"
+        "    font-weight: 600;"
+        "    background: transparent;"
+        "}"
+    );
+    
+    netLayout->addWidget(m_pNetPngLabel);
+    netLayout->addWidget(m_pNetStatusLabel);
+    
+    // Add to main layout
+    mainLayout->addWidget(m_pTitleLabel, 2);
+    mainLayout->addStretch(1);
+    mainLayout->addWidget(m_pClockLabel, 2);
+    mainLayout->addStretch(1);
+    mainLayout->addLayout(netLayout, 1);
+    
+    m_timer = new QTimer();
+    
+    // Clean, professional styling
+    q_func()->setStyleSheet(
+        "FaceHomeTitleFrm {"
+        "    background-color: #ffffff;"
+        "    border-bottom: 2px solid #e2e8f0;"
+        "}"
+    );
 }
 
 void FaceHomeTitleFrmPrivate::InitData()
 {
-    q_func()->setFixedHeight(42);
+    q_func()->setFixedHeight(60);
     q_func()->setObjectName("FaceHomeTitleFrm");
-    m_pClockLabel->setObjectName("ClockLabel");
-
-    /*
-     * 	QLocale locale = QLocale::English;
-    if (isc_setting::SStting::instance().getLanguage() == "zh")
-    {
-        locale = QLocale::Chinese;
-    } else if (isc_setting::SStting::instance().getLanguage() == "en")
-    {
-        locale = QLocale::English;
-    }
-    mTopLabel->setText("\r\r\r\r\r\r\r\r\r\r\r\r" + locale.toString(QDateTime::currentDateTime(), tr(szTimerText)));
-*/
-
-	m_timer->start(1000); // 1秒单触发定时器
-    int index = ReadConfig::GetInstance()->getLanguage_Mode();
-   
-    QLocale locale;
-    if (index==0)
-        locale = QLocale::English;  
-    if (index==1)
-        locale = QLocale::English;     
-    m_pClockLabel->setText(locale.toString(QDateTime::currentDateTime(), QObject::tr("yyyy-MM-dd dddd hh:mm:ss")));
-        
+    
+    m_timer->start(1000);
+    updateClockDisplay();
 }
 
 void FaceHomeTitleFrmPrivate::InitConnect()
 {
-	QObject::connect(m_timer, &QTimer::timeout,   [&]{
+    QObject::connect(m_timer, &QTimer::timeout, [&]{
+        updateClockDisplay();
+    });
+}
 
-        int index = ReadConfig::GetInstance()->getLanguage_Mode();        
-
-        QLocale locale;
-
-        if (index==0)
-           locale = QLocale::English;
-        if (index==1)
-           locale = QLocale::English;  
-        m_pClockLabel->setText(locale.toString(QDateTime::currentDateTime(), QObject::tr("yyyy-MM-dd dddd hh:mm:ss")));
-        m_pNetPngLabel->setVisible(true);
-			
-	});
+void FaceHomeTitleFrmPrivate::updateClockDisplay()
+{
+    QDateTime displayTime;
+    
+    if (m_useServerTime && m_serverTime.isValid()) {
+        qint64 elapsedMs = m_lastServerTimeUpdate.msecsTo(QDateTime::currentDateTime());
+        displayTime = m_serverTime.addMSecs(elapsedMs);
+    } else {
+        displayTime = QDateTime::currentDateTime();
+    }
+    
+    int index = ReadConfig::GetInstance()->getLanguage_Mode();
+    QLocale locale;
+    
+    if (index == 0)
+        locale = QLocale::English;  
+    if (index == 1)
+        locale = QLocale::English;
+    
+    QString timeText = locale.toString(displayTime, "yyyy-MM-dd hh:mm:ss");
+    m_pClockLabel->setText(timeText);
 }
 
 void FaceHomeTitleFrm::setTitleText(const QString &text)
 {
     Q_D(FaceHomeTitleFrm);
-    d->m_pClockLabel->setText(text);
+    d->m_pTitleLabel->setText(text);
+}
 
+void FaceHomeTitleFrm::setServerTime(const QDateTime &serverTime)
+{
+    Q_D(FaceHomeTitleFrm);
+    
+    d->m_serverTime = serverTime;
+    d->m_lastServerTimeUpdate = QDateTime::currentDateTime();
+    d->m_useServerTime = true;
+    d->updateClockDisplay();
 }
 
 void FaceHomeTitleFrm::setLinkState(const bool &state, const int &type)
 {
     Q_D(FaceHomeTitleFrm);
 
-    if(state && (type == 1))
+    if(state && (type == 1)) {
         d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/ethernet_connect.png"));
-    else if(state && (type == 2))
+        d->m_pNetStatusLabel->setText("Ethernet Connected");
+        d->m_pNetStatusLabel->setStyleSheet(
+            "QLabel { font-size: 13px; color: #059669; font-weight: 600; background: transparent; }"
+        );
+    }
+    else if(state && (type == 2)) {
         d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/wifi_connect.png"));
-    else if(!state)d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/ethernet_disconnect.png"));
-    else d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/ethernet_connect.png"));
+        d->m_pNetStatusLabel->setText("WiFi Connected");
+        d->m_pNetStatusLabel->setStyleSheet(
+            "QLabel { font-size: 13px; color: #059669; font-weight: 600; background: transparent; }"
+        );
+    }
+    else if(!state) {
+        d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/ethernet_disconnect.png"));
+        d->m_pNetStatusLabel->setText("Disconnected");
+        d->m_pNetStatusLabel->setStyleSheet(
+            "QLabel { font-size: 13px; color: #dc2626; font-weight: 600; background: transparent; }"
+        );
+    }
+    else {
+        d->m_pNetPngLabel->setPixmap(QPixmap(":/Images/ethernet_connect.png"));
+        d->m_pNetStatusLabel->setText("Connected");
+        d->m_pNetStatusLabel->setStyleSheet(
+            "QLabel { font-size: 13px; color: #059669; font-weight: 600; background: transparent; }"
+        );
+    }
 }
 
 void FaceHomeTitleFrm::paintEvent(QPaintEvent *event)
@@ -157,6 +232,4 @@ void FaceHomeTitleFrm::paintEvent(QPaintEvent *event)
     opt.init(this);
     style()->drawPrimitive(QStyle::PE_Widget, &opt, &painter, this);
     QWidget::paintEvent(event);
-		
 }
-

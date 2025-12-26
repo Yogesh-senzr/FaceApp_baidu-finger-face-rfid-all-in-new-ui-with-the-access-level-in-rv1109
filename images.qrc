@@ -60,5 +60,14 @@
         <file>Images/QRcode_green2_48hour_bg.png</file>
         <file>Images/progress.gif</file>
         <file>Images/Homeicon.png</file>
+        <file>Images/person_icon.png</file>
+        <file>Images/records_icon.png</file>
+        <file>Images/network_icon.png</file>
+        <file>Images/server_icon.png</file>
+        <file>Images/refresh.png</file>
+        <file>Images/system_icon.png</file>
+        <file>Images/identify_icon.png</file>
+        <file>Images/lock.png</file>
+
     </qresource>
 </RCC>

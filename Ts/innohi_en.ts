@@ -752,9 +752,9 @@
         <translation>There are multiple faces, please re-collect faces data! ! !</translation>
     </message>
     <message>
-        <location filename="../SettingFuncFrms/ManagingPeopleFrms/AddUserFrm.cpp" line="252"/>
-        <source>LowFaceQuality</source>
-        <translation>The face data quality is low, please re-collect the face data! ! !</translation>
+        //<location filename="../SettingFuncFrms/ManagingPeopleFrms/AddUserFrm.cpp" line="252"/>
+        //<source>LowFaceQuality</source>
+        //<translation>The face data quality is low, please re-collect the face data! ! !</translation>
     </message>
     <message>
         <location filename="../SettingFuncFrms/ManagingPeopleFrms/AddUserFrm.cpp" line="255"/>
@@ -1850,7 +1850,8 @@ Connected</source>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="133"/>
-        <source>    当前体温: </source>
+        <source>    当前体温
+: </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -1860,27 +1861,32 @@ Connected</source>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="136"/>
-        <source>姓名: ***</source>
+        <source>姓名
+: ***</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="136"/>
-        <source>姓名: </source>
+        <source>姓名
+: </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="138"/>
-        <source>身份证号: ****************</source>
+        <source>身份证号
+: ****************</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="138"/>
-        <source>身份证号: </source>
+        <source>身份证号
+: </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../FaceHomeFrms/LRHealthCodeFrm.cpp" line="143"/>
-        <source>检测时间 :</source>
+        <source>检测时间
+ :</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
